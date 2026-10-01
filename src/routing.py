@@ -1,9 +1,9 @@
-"""Pure HTTP checks for the webhook and the setup route.
+"""بررسی خالص مسیر وب‌هوک و مسیر ثبت وب‌هوک، بدون شبکه.
 
-Bale's documented `setWebhook` only takes a URL (ports 443 or 88). There is
-no secret-token parameter in the current docs, so `WEBHOOK_SECRET` is checked
-either as a path segment (`/webhook/<secret>`) or as the `X-Webhook-Secret`
-header. When the secret is unset, only the bare `/webhook` path is accepted.
+مستند setWebhook بله فقط یک آدرس می‌گیرد (پورت ۴۴۳ یا ۸۸) و فیلد راز جدا ندارد.
+برای همین WEBHOOK_SECRET را خودمان چک می‌کنیم: یا تکه‌ای از مسیر
+(/webhook/<راز>) یا هدر X-Webhook-Secret.
+اگر راز خالی باشد فقط خود /webhook باز است، تا توسعهٔ محلی گیر نکند.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from urllib.parse import unquote
 
 
 def secrets_equal(left: str, right: str) -> bool:
+    """مقایسهٔ راز بدون لو رفتن طول یا تفاوت زودهنگام. مقایسهٔ معمولی رشته این را تضمین نمی‌کند."""
     left_bytes = left.encode("utf-8")
     right_bytes = right.encode("utf-8")
     if len(left_bytes) != len(right_bytes):
@@ -21,6 +22,11 @@ def secrets_equal(left: str, right: str) -> bool:
 
 
 def webhook_authorized(path: str, header_secret: str | None, configured_secret: str | None) -> bool:
+    """می‌گوید این درخواست وب‌هوک مجاز است یا نه.
+
+    مسیر اضافی بعد از راز رد می‌شود تا کسی با پسوند تصادفی وارد نشود.
+    راز داخل مسیر ممکن است URL-encode شده باشد، برای همین قبل از مقایسه باز می‌شود.
+    """
     configured = (configured_secret or "").strip()
     normalized = path.rstrip("/") or "/"
     if not configured:
@@ -37,7 +43,7 @@ def webhook_authorized(path: str, header_secret: str | None, configured_secret: 
 
 
 def setup_authorized(header_secret: str | None, configured_secret: str | None) -> bool:
-    """`/set-webhook` stays closed unless WEBHOOK_SECRET is configured."""
+    """مسیر /set-webhook بدون WEBHOOK_SECRET بسته می‌ماند تا غریبه وب‌هوک را عوض نکند."""
     configured = (configured_secret or "").strip()
     if not configured:
         return False

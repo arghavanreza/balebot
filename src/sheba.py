@@ -1,27 +1,26 @@
-"""Iranian IBAN (Sheba / شبا) checks.
+"""بررسی شماره شبا (IBAN ایرانی).
 
-The public rule is ISO 13616 with the ISO 7064 MOD 97-10 checksum:
-move the first four characters to the end, expand letters (A=10 … Z=35),
-and require the integer value modulo 97 to equal 1.
-
-An Iranian Sheba is the country code IR plus 24 digits (26 characters).
+قاعدهٔ عمومی IBAN این است: چهار نویسهٔ اول را به ته ببر، حرف‌ها را به عدد تبدیل کن
+(A برابر ۱۰ تا Z برابر ۳۵) و باقی‌ماندهٔ تقسیم بر ۹۷ باید ۱ باشد.
+شبا ایران یعنی IR به‌علاوهٔ ۲۴ رقم، روی هم ۲۶ نویسه.
+این ماژول فقط محاسبه است و به بله یا ورکر وصل نیست تا بشود بدون شبکه تستش کرد.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-# Persian (۰-۹) and Arabic-Indic (٠-٩) digits → ASCII.
+# رقم فارسی و عربی را به انگلیسی برمی‌گردانیم تا بقیهٔ حساب فقط رقم ASCII ببیند.
 _DIGIT_TRANSLATION = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
 
 
 @dataclass(frozen=True)
 class ShebaCheck:
-    """Result of a Sheba check.
+    """نتیجهٔ بررسی.
 
-    `normalized` is `IR` + 24 digits when the shape is acceptable, even if the
-    checksum fails. It is empty when the text is not an IR Sheba at all.
-    `reason` is `ok`, `format`, or `checksum`.
+    normalized وقتی شکل IR و ۲۴ رقم درست باشد پر است، حتی اگر رقم کنترلی غلط باشد،
+    تا به کاربر همان عدد تمیزشده را نشان بدهیم. اگر اصلاً شکل شبا نباشد خالی است.
+    reason یکی از ok، format یا checksum است و فقط برای لاگ و تست است، نه متن مشتری.
     """
 
     valid: bool
@@ -30,7 +29,7 @@ class ShebaCheck:
 
 
 def _expand_alnum(value: str) -> str | None:
-    """Expand an IBAN rearrangement to digits. None if a character is illegal."""
+    """حرف‌های IBAN را به عدد تبدیل می‌کند. نویسهٔ غیرمجاز یعنی کل شماره رد است."""
     parts: list[str] = []
     for char in value:
         if char.isdigit():
@@ -43,6 +42,8 @@ def _expand_alnum(value: str) -> str | None:
 
 
 def _mod97(number: str) -> int:
+    # باقی‌مانده را رقم‌به‌رقم حساب می‌کنیم تا کل عدد را یک‌جا نسازیم.
+    # نتیجه با «خود عدد به‌پیمانهٔ ۹۷» یکی است.
     remainder = 0
     for char in number:
         remainder = (remainder * 10 + int(char)) % 97
@@ -50,10 +51,9 @@ def _mod97(number: str) -> int:
 
 
 def iban_is_valid(iban: str) -> bool:
-    """Return True when `iban` passes ISO 7064 MOD 97-10.
+    """رقم کنترلی IBAN را چک می‌کند. فاصله باید از قبل حذف شده باشد.
 
-    Spaces must already be removed. Country is not restricted here;
-    `validate_sheba` is what enforces the IR + 24 digits shape.
+    این تابع کشور را محدود نمی‌کند. اجبار شکل IR و ۲۴ رقم کار validate_sheba است.
     """
     compact = iban.upper()
     if len(compact) < 5 or not compact.isalnum() or not compact[:2].isalpha():
@@ -66,7 +66,7 @@ def iban_is_valid(iban: str) -> bool:
 
 
 def iban_check_digits(country: str, bban: str) -> str:
-    """Return the two check digits for a country code and BBAN (no spaces)."""
+    """دو رقم کنترلی را برای ساختن نمونهٔ معتبر حساب می‌کند. ورودی نباید فاصله داشته باشد."""
     country = country.upper()
     if len(country) != 2 or not country.isalpha():
         raise ValueError("country must be two letters")
@@ -80,10 +80,10 @@ def iban_check_digits(country: str, bban: str) -> str:
 
 
 def normalize_sheba(raw: str) -> str | None:
-    """Return `IR` + 24 digits, or None when the text is not that shape.
+    """متن کاربر را به IR و ۲۴ رقم تبدیل می‌کند. اگر شکلش این نباشد None برمی‌گردد.
 
-    Spaces, dashes, and the Persian word «شبا» are ignored. Persian and
-    Arabic-Indic digits are accepted. The IR prefix is required.
+    فاصله، خط تیره و کلمهٔ «شبا» نادیده گرفته می‌شوند. رقم فارسی و عربی قبول است.
+    بدون پیشوند IR نامعتبر است تا شمارهٔ خام بانک با شبا قاطی نشود.
     """
     if not isinstance(raw, str):
         return None
@@ -99,7 +99,7 @@ def normalize_sheba(raw: str) -> str | None:
 
 
 def validate_sheba(raw: str) -> ShebaCheck:
-    """Validate a customer-supplied Iranian Sheba number."""
+    """شبا را هم از نظر شکل و هم از نظر رقم کنترلی می‌سنجد. این همان تابعی است که بازو صدا می‌زند."""
     normalized = normalize_sheba(raw)
     if normalized is None:
         return ShebaCheck(valid=False, normalized="", reason="format")

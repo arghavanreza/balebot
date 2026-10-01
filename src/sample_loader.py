@@ -1,9 +1,8 @@
-"""Load the committed sample workbook.
+"""خواندن فایل نمونهٔ اکسل.
 
-Order:
-1. R2 binding `FILES`, key `sample.xlsx` (only if you uncomment it in wrangler).
-2. Workers static asset `assets/sample.xlsx` via the `ASSETS` binding.
-3. The file on disk, for unit tests and `pywrangler dev` if the asset fetch fails.
+ترتیب عمدی است: اگر R2 را روشن کرده باشید همان اولویت دارد، وگرنه دارایی ثابت
+کنار ورکر، و در نهایت فایل روی دیسک. دیسک برای pytest و برای وقتی است که
+خواندن دارایی در توسعهٔ محلی شکست بخورد. مشتری نباید به‌خاطر جای فایل، نمونه را از دست بدهد.
 """
 
 from __future__ import annotations
@@ -15,6 +14,7 @@ XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def disk_candidates() -> list[Path]:
+    """چند مسیر محتمل، چون تست از ریشه اجرا می‌شود و ورکر گاهی از پوشهٔ دیگری بالا می‌آید."""
     here = Path(__file__).resolve()
     return [
         here.parent.parent / "assets" / SAMPLE_NAME,
@@ -24,6 +24,7 @@ def disk_candidates() -> list[Path]:
 
 
 def read_sample_from_disk() -> bytes:
+    """اولین sample.xlsx موجود روی دیسک. اگر هیچ‌کدام نباشد خطا می‌دهیم تا سکوت، فایل خالی نفرستد."""
     for path in disk_candidates():
         if path.is_file():
             return path.read_bytes()
@@ -31,7 +32,7 @@ def read_sample_from_disk() -> bytes:
 
 
 def buffer_to_bytes(buf: object) -> bytes:
-    """Turn a JS ArrayBuffer (or Python bytes) into `bytes`."""
+    """خروجی جاوااسکریپت (ArrayBuffer) یا bytes پایتون را به bytes یکدست تبدیل می‌کند."""
     if isinstance(buf, (bytes, bytearray, memoryview)):
         return bytes(buf)
     to_bytes = getattr(buf, "to_bytes", None)
@@ -64,7 +65,8 @@ async def _response_bytes(response: object) -> bytes:
 
 
 async def _read_asset(assets: object, name: str) -> bytes:
-    # ASSETS is a Fetcher. workers.fetch accepts a URL string.
+    # ASSETS مثل یک fetch داخلی است و آدرس رشته‌ای می‌گیرد. دامنهٔ assets.local قراردادی است
+    # و به اینترنت نمی‌رود؛ فقط نام فایل داخل پوشهٔ assets را مشخص می‌کند.
     response = await assets.fetch(f"https://assets.local/{name}")  # type: ignore[attr-defined]
     status = int(response.status)
     if status != 200:
@@ -73,6 +75,7 @@ async def _read_asset(assets: object, name: str) -> bytes:
 
 
 async def _read_r2(bucket: object, key: str) -> bytes:
+    """شیء R2 را به بایت تبدیل می‌کند. بدنه گاهی روی خود شیء است و گاهی روی فیلد body."""
     obj = await bucket.get(key)  # type: ignore[attr-defined]
     if obj is None:
         raise FileNotFoundError(key)
@@ -85,6 +88,7 @@ async def _read_r2(bucket: object, key: str) -> bytes:
 
 
 async def load_sample_xlsx(env: object) -> bytes:
+    """نمونه را از اولین منبع سالم می‌خواند. خطای R2 یا دارایی، تلاش بعدی را قطع نمی‌کند."""
     files = _binding(env, "FILES")
     if files is not None:
         try:

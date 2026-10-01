@@ -1,3 +1,5 @@
+"""تبدیل شیت اول به متن؛ شیت دوم و سطر خالی نباید در خروجی بیایند."""
+
 from datetime import datetime
 from io import BytesIO
 

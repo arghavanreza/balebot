@@ -1,3 +1,5 @@
+"""رقم کنترلی شبا، شامل نمونهٔ معتبر و شکل‌های نامعتبر رایج."""
+
 from sheba import iban_check_digits, iban_is_valid, validate_sheba
 
 VALID = "IR430120000000000000000001"

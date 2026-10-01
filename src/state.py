@@ -1,8 +1,9 @@
-"""Short-lived conversation state, keyed by Bale user id.
+"""وضعیت کوتاه گفتگو، با کلید شناسهٔ کاربر بله.
 
-Flows (awaiting a Sheba, picking a text key, awaiting the new text) are a
-small JSON document. A new state overwrites the previous one. TTL is 30
-minutes, which is above KV's 60-second minimum.
+وقتی بازو منتظر شبا، انتخاب کلید، یا متن جدید است، یک JSON کوچک در KV می‌نویسد.
+وضعیت تازه، قبلی را پاک می‌کند؛ هم‌زمان دو جریان باز نمی‌ماند.
+عمر وضعیت ۳۰ دقیقه است. این عدد از حداقل ۶۰ ثانیهٔ KV بیشتر است
+تا گفتگوی رهاشده تا ابد در حافظه نماند.
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ DEDUPE_TTL_SECONDS = 60 * 60
 
 
 class StateRepository:
+    """خواندن و نوشتن جریان فعلی یک کاربر. کلیدها به شکل state:<شناسه> هستند."""
+
     def __init__(self, kv: KeyValue) -> None:
         self.kv = kv
 
@@ -44,12 +47,13 @@ class StateRepository:
 
 
 class UpdateDedupe:
-    """Remember `update_id` for an hour so a webhook retry does not send twice."""
+    """شناسهٔ آپدیت را یک ساعت نگه می‌دارد تا تلاش دوبارهٔ بله همان جواب را دو بار نفرستد."""
 
     def __init__(self, kv: KeyValue) -> None:
         self.kv = kv
 
     async def claim(self, update_id: object) -> bool:
+        # بدون شناسه نمی‌شود تکراری را شناخت؛ پردازش را رد نمی‌کنیم.
         if update_id is None:
             return True
         key = f"update:{update_id}"

@@ -13,6 +13,7 @@ Persian Bale bot on a **Python Cloudflare Worker**. A customer sends an `.xlsx` 
 - دکمهٔ «دریافت سمپل اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر.
 - دکمهٔ «بررسی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
 - اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها از همان‌جا قابل ویرایش‌اند.
+- هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
 قالب خروجی اکسل عمداً موقت است. نقطهٔ تغییر: تابع `convert_excel_to_text` در `src/excel_convert.py`.
@@ -49,6 +50,44 @@ npx wrangler kv namespace create TEXTS
 متن‌ها در کلید `bot_texts` ذخیره می‌شوند. بار اول که خوانده شوند، پیش‌فرض‌های `src/texts.py` در KV نوشته می‌شود. کلید تازه‌ای که در نسخهٔ بعدی کد اضافه شود، بدون پاک کردن ویرایش‌های قبلی پر می‌شود.
 
 وضعیت گفتگو (`state:<user id>`) و شناسهٔ آپدیت تکراری (`update:<id>`) هم در همین namespace هستند و TTL دارند (۳۰ دقیقه برای جریان، یک ساعت برای جلوگیری از پردازش دوباره).
+
+### ۳٫۵ پایگاه کاربران (D1)، از جمله برای ورکر از قبل مستقر
+
+کاربران در KV نیستند. D1 یک پایگاه SQLite کنار ورکر است. جدول `users` در `migrations/0001_users.sql` است و کد با باندینگ `DB` به آن وصل می‌شود.
+
+شناسهٔ داخل `wrangler.jsonc` جای‌نگهدار است (`00000000-0000-4000-8000-000000000000`) و متعلق به هیچ حساب کلادفلری نیست. آن را حدس نزنید. بعد از دستور ساخت، همان `database_id` چاپ‌شده را در فایل بگذارید. این شناسه مثل توکن بازو راز نیست (شناسهٔ KV هم در همین فایل است) ولی تا وقتی پایگاه را نساخته‌اید نباید چیز دیگری جایش نوشته شود.
+
+اگر ورکر همین حالا روی کلادفلر روشن است، این ترتیب را بروید. ساخت پایگاه و مهاجرت، نسخهٔ در حال اجرا را عوض نمی‌کند. نسخهٔ جدید وقتی کاربران را می‌نویسد که هم جدول ساخته شده باشد و هم ورکر دوباره با باندینگ `DB` منتشر شده باشد.
+
+```bash
+npx wrangler d1 create bale-bot-users
+```
+
+خروجی یک `database_id` دارد. همان را در `wrangler.jsonc` داخل `d1_databases` جایگزین جای‌نگهدار کنید. `database_name` باید `bale-bot-users` بماند تا با دستورهای زیر یکی باشد. نام باندینگ `DB` است و کد پایتون همین نام را می‌خواند.
+
+برای `pywrangler dev` همان جای‌نگهدار کافی است. مهاجرت محلی یک فایل SQLite روی همین دستگاه می‌سازد و به حساب کلادفلر وصل نمی‌شود. شناسهٔ واقعی فقط برای پایگاه راه‌دور لازم است.
+
+سپس جدول را روی پایگاه راه‌دور بسازید:
+
+```bash
+npx wrangler d1 migrations apply bale-bot-users --remote
+```
+
+این دستور فایل‌های `migrations/` را به ترتیب اجرا می‌کند و یادش می‌ماند کدام فایل اعمال شده، پس دوباره زدنش بی‌خطر است. بعد ورکر را منتشر کنید تا باندینگ به نسخهٔ در حال اجرا برسد:
+
+```bash
+uv run pywrangler deploy
+```
+
+اگر برعکس عمل کنید (اول deploy، بعد مهاجرت) بازو همچنان جواب می‌دهد و فقط تا ساخته شدن جدول، ثبت کاربر در لاگ خطا می‌دهد. هم وب‌هوک و هم زمان‌بند دقیقه‌ای از یک تابع می‌گذرند، پس کاربر در هر دو ذخیره می‌شود. آپدیت تکراری یک بار شمرده می‌شود.
+
+برای `pywrangler dev` جدول محلی جداست:
+
+```bash
+npx wrangler d1 migrations apply bale-bot-users --local
+```
+
+دستور مدیر `/users` حداکثر ۲۰ نفر را به ترتیب آخرین بازدید نشان می‌دهد. کاربر عادی همان پاسخ «فقط برای مدیر» را می‌گیرد. این فهرست دکمهٔ کیبورد نیست.
 
 ### ۴. Secrets
 
@@ -239,6 +278,7 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 | --- | --- |
 | `/start` | منوی کاربر یا مدیر |
 | `/id` | نمایش شناسهٔ عددی |
+| `/users` | فقط مدیر: فهرست کاربران اخیر از D1 |
 | `/cancel` | لغو جریان فعلی |
 | دریافت سمپل اکسل | ارسال نمونه |
 | بررسی شبا | درخواست شبا؛ تا پاسخ معتبر یا انصراف در همین حالت می‌ماند |
@@ -267,6 +307,7 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 - Reply-keyboard button «دریافت سمپل اکسل» sends `assets/sample.xlsx` so customers can see the expected columns (`name`, `amount`, `sheba`).
 - Reply-keyboard button «بررسی شبا» asks for an Iranian IBAN and answers valid or invalid.
 - When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits every customer-facing string at runtime (Workers KV, not a redeploy).
+- Every user who sends a message or callback is upserted into Cloudflare D1. The admin can list recent users with `/users`.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
 The Excel mapping is explicitly temporary. Change `convert_excel_to_text(data: bytes) -> str` in `src/excel_convert.py`. There is a TODO in that file.
@@ -300,6 +341,44 @@ npx wrangler kv namespace create TEXTS
 Paste the printed `id` over `00000000000000000000000000000001`.
 
 On first read the Worker writes the defaults from `src/texts.py` under the key `bot_texts`. Later code that adds a key merges it in and keeps existing edits. Conversation state (`state:<user id>`, 30 minutes) and update de-dupe (`update:<id>`, 1 hour) use the same namespace. Durable Objects are not used.
+
+### 3.5 User database (D1), including an already-deployed Worker
+
+Users are stored in D1 (SQLite beside the Worker), not in KV. The table is `migrations/0001_users.sql`. The Worker reads it through the `DB` binding.
+
+The `database_id` in `wrangler.jsonc` is a placeholder (`00000000-0000-4000-8000-000000000000`). It is not a real Cloudflare id. Replace it with the id printed by the create command. Do not invent one.
+
+Creating the database and applying migrations does not change the Worker that is already running. The new code writes users only after the table exists and the Worker is redeployed with the `DB` binding.
+
+```bash
+npx wrangler d1 create bale-bot-users
+```
+
+Paste the printed `database_id` over the placeholder in `d1_databases`. Keep `database_name` as `bale-bot-users` and the binding name as `DB` (the Python code uses that name).
+
+Local `pywrangler dev` can keep the placeholder. A `--local` migration creates a SQLite file on this machine and does not touch the Cloudflare account. The real id is required only for the remote database.
+
+Create the table on the remote database:
+
+```bash
+npx wrangler d1 migrations apply bale-bot-users --remote
+```
+
+Wrangler runs the SQL files in `migrations/` in order and records which files already ran, so applying twice is safe. Then publish the Worker so the running version receives the binding:
+
+```bash
+uv run pywrangler deploy
+```
+
+Deploying before the migration still answers users. Upserts log an error until the table exists. Webhook and the minute cron both go through `handle_update`, so both paths register the user. A retried update is counted once.
+
+Local dev uses a separate SQLite file:
+
+```bash
+npx wrangler d1 migrations apply bale-bot-users --local
+```
+
+`/users` is admin-only and lists up to 20 people, most recently seen first. It is a command, not a keyboard button.
 
 ### 4. Secrets
 
@@ -447,6 +526,7 @@ A failed check leaves the bot waiting for another number. A valid check, «ان�
 | --- | --- |
 | `/start` | User menu, or admin menu when the id matches |
 | `/id` | Replies with the numeric user id |
+| `/users` | Admin only: recent users from D1 |
 | `/cancel` | Cancels Sheba entry or text editing |
 | Sample button | `sendDocument` of `sample.xlsx` to that chat |
 | Sheba button | Asks for an IBAN |

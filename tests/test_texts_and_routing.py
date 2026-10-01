@@ -1,3 +1,5 @@
+"""متن‌های KV، عمر وضعیت گفتگو، و قفل مسیر وب‌هوک."""
+
 import asyncio
 
 from routing import setup_authorized, webhook_authorized

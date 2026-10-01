@@ -1,3 +1,8 @@
+"""جریان‌های گفتگو بدون شبکه: منو، شبا، اکسل، ویرایش متن.
+
+کلاینت و KV ساختگی‌اند تا این تست‌ها به توکن بله یا کلادفلر نیاز نداشته باشند.
+"""
+
 import asyncio
 from io import BytesIO
 
@@ -8,6 +13,7 @@ from excel_convert import convert_excel_to_text
 from state import StateRepository, UpdateDedupe
 from storage import MemoryKV
 from texts import DEFAULT_TEXTS, TextRepository
+from users import MemoryUserStore
 
 ADMIN = "42"
 USER = "7"
@@ -274,6 +280,83 @@ def test_missing_admin_does_not_send_a_document():
 def test_text_filename_is_ascii():
     assert text_filename("گزارش نهایی.xlsx") == "sheet.txt"
     assert text_filename("Q1-payments.xlsx") == "Q1-payments.txt"
+
+
+def test_messages_and_callbacks_are_stored_once_per_update():
+    async def scenario():
+        client = FakeBale()
+        store = MemoryUserStore()
+        times = iter(["2026-10-01T00:00:00Z", "2026-10-01T01:00:00Z"])
+        ctx = _ctx(client)
+        ctx.users = store
+        ctx.clock = lambda: next(times)
+
+        await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
+        await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
+        await handle_update(
+            {
+                "update_id": 2,
+                "callback_query": {
+                    "id": "cq-9",
+                    "from": {"id": int(USER), "first_name": "علی", "username": "ali"},
+                    "data": "x",
+                },
+            },
+            ctx,
+        )
+        saved = store.by_id[int(USER)]
+        assert saved.message_count == 2
+        assert saved.first_seen_at == "2026-10-01T00:00:00Z"
+        assert saved.last_seen_at == "2026-10-01T01:00:00Z"
+        assert client.callbacks == ["cq-9"]
+
+    _run(scenario())
+
+
+def test_admin_users_command_and_failures_do_not_break_chat():
+    async def scenario():
+        client = FakeBale()
+        store = MemoryUserStore()
+        ctx = _ctx(client)
+        ctx.users = store
+        ctx.clock = lambda: "2026-10-01T00:00:00Z"
+        await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
+        await handle_update(_text(ADMIN, "/users", update_id=2), ctx)
+        listing = client.messages[-1]["text"]
+        assert "@ali" in listing
+        assert USER in listing
+        assert "کاربران اخیر" in listing
+
+        await handle_update(_text(USER, "/users", update_id=3), ctx)
+        assert "فقط برای مدیر" in client.messages[-1]["text"]
+
+        class Boom:
+            async def touch(self, profile):
+                raise RuntimeError("no table")
+
+            async def list_recent(self, limit=20):
+                raise RuntimeError("no table")
+
+        ctx.users = Boom()
+        await handle_update(_text(USER, "سلام", update_id=4), ctx)
+        assert "متوجه نشدم" in client.messages[-1]["text"]
+        await handle_update(_text(ADMIN, "/users", update_id=5), ctx)
+        assert "فهرست کاربران" in client.messages[-1]["text"]
+
+        ctx.users = None
+        await handle_update(_text(ADMIN, "/users", update_id=6), ctx)
+        assert "پایگاه کاربران وصل نیست" in client.messages[-1]["text"]
+
+        fresh = MemoryUserStore()
+        ctx.users = fresh
+        await handle_update(
+            {"update_id": 7, "message": {"chat": {"id": int(USER)}, "text": "/start"}},
+            ctx,
+        )
+        assert fresh.by_id == {}
+        assert client.messages
+
+    _run(scenario())
 
 
 def test_callback_is_answered():

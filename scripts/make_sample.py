@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Write assets/sample.xlsx with the placeholder columns the default converter expects.
+"""فایل assets/sample.xlsx را می‌سازد؛ همان نمونه‌ای که دکمهٔ «دریافت سمپل اکسل» می‌فرستد.
 
-Columns: name, amount, sheba. A second sheet holds a marker the converter must
-ignore. Sheba values are checksum-valid placeholders, not real accounts.
+ستون‌ها name و amount و sheba هستند، چون مبدل پیش‌فرض هنوز همین‌ها را خط‌به‌خط می‌نویسد.
+شیت دوم یک نشانگر دارد که مبدل نباید آن را در خروجی بیاورد.
+شباها از نظر رقم کنترلی معتبرند ولی حساب واقعی نیستند.
 """
 
 from __future__ import annotations
@@ -19,10 +20,12 @@ from sheba import iban_check_digits  # noqa: E402
 
 
 def build_sheba(bban: str) -> str:
+    """با رقم کنترلی درست، یک شبا می‌سازد تا نمونه در بررسی شبا هم معتبر باشد."""
     return f"IR{iban_check_digits('IR', bban)}{bban}"
 
 
 def main() -> None:
+    """نمونه را در assets می‌نویسد. شیت دوم فقط برای این است که تست، نادیده گرفتنش را ثابت کند."""
     first = build_sheba("0120000000000000000001")
     second = build_sheba("0170000000000000000002")
 
