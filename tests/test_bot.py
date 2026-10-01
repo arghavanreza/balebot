@@ -10,6 +10,7 @@ from openpyxl import Workbook
 
 from bot import BotContext, handle_update, text_filename
 from excel_convert import convert_excel_to_text
+from faq import FaqRepository
 from state import StateRepository, UpdateDedupe
 from storage import MemoryKV
 from texts import DEFAULT_TEXTS, TextRepository
@@ -77,6 +78,7 @@ def _ctx(client, sample=b"PK-sample", admin_id=ADMIN, converter=None):
         admin_id=admin_id,
         load_sample=load_sample,
         converter=converter or convert_excel_to_text,
+        faq=FaqRepository(kv),
     )
     return context
 
@@ -146,7 +148,7 @@ def test_sample_button_sends_xlsx_to_the_user():
     async def scenario():
         client = FakeBale()
         ctx = _ctx(client, sample=b"excel-bytes")
-        await handle_update(_text(USER, "دریافت سمپل اکسل"), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"]), ctx)
         assert len(client.documents) == 1
         document = client.documents[0]
         assert document["chat_id"] == int(USER)
@@ -162,7 +164,7 @@ def test_sheba_flow_valid_invalid_and_retry():
     async def scenario():
         client = FakeBale()
         ctx = _ctx(client)
-        await handle_update(_text(USER, "بررسی شبا", update_id=1), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=1), ctx)
         assert "شبا" in client.messages[-1]["text"]
         await handle_update(_text(USER, "IR000000000000000000000000", update_id=2), ctx)
         assert "نامعتبر" in client.messages[-1]["text"]

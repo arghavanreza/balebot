@@ -3,8 +3,9 @@
 ورکر هر آپدیت بله را به handle_update می‌دهد. این فایل به محیط کلادفلر وصل نیست
 تا بشود جریان‌ها را با حافظهٔ ساختگی و کلاینت ساختگی تست کرد.
 
-کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، بررسی شبا،
-ویرایش متن، تبدیل فایل اکسل و فرستادن نتیجه فقط برای مدیر، و ثبت کاربر در D1.
+کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، اعتبارسنجی شبا،
+پرسش‌های متداول شعبه، ویرایش متن، تبدیل فایل اکسل و فرستادن نتیجه فقط برای مدیر،
+ثبت کاربر در D1، و خوش‌آمد با نام اگر پایگاه در دسترس باشد.
 """
 
 from __future__ import annotations
@@ -14,6 +15,20 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 from excel_convert import ExcelConvertError, convert_excel_to_text
+from faq import (
+    MAX_ANSWER_LENGTH,
+    MAX_FAQ_ITEMS,
+    MAX_QUESTION_LENGTH,
+    FaqFullError,
+    FaqItem,
+    FaqRepository,
+    faq_keyboard,
+    format_faq_answer,
+    format_faq_menu,
+    fresh_faq_id,
+    match_faq_item,
+    parse_faq_admin_input,
+)
 from sample_loader import XLSX_MIME
 from state import StateRepository, UpdateDedupe
 from texts import (
@@ -28,6 +43,7 @@ from users import (
     RECENT_USER_LIMIT,
     USERS_DB_UNAVAILABLE,
     USERS_LIST_FAILED,
+    UserProfile,
     UserStore,
     bale_user_from_update,
     format_recent_users,
@@ -60,6 +76,8 @@ class BotContext:
     dedupe: UpdateDedupe | None = None
     users: UserStore | None = None
     clock: Callable[[], str] = utc_now_iso
+    # پرسش‌ها روی همان KV متن‌ها هستند، ولی سند جدا دارند. None یعنی این بخش خاموش است.
+    faq: FaqRepository | None = None
 
 
 def norm(text: str) -> str:
@@ -97,8 +115,17 @@ def clip(text: str, limit: int) -> str:
 
 
 def user_keyboard(texts: dict[str, str]) -> dict:
-    """کیبورد پایین چت برای کاربر عادی: نمونهٔ اکسل و بررسی شبا."""
-    return {"keyboard": [[texts["btn_sample"]], [texts["btn_sheba"]]]}
+    """کیبورد مشتری: نمونهٔ فایل حقوق، اعتبارسنجی شبا، پرسش‌های متداول.
+
+    هر برچسب یک ردیف است چون «نمونه فایل برای واریز حقوق» در ردیف مشترک جا نمی‌شود.
+    """
+    return {
+        "keyboard": [
+            [texts["btn_sample"]],
+            [texts["btn_sheba"]],
+            [texts["btn_faq"]],
+        ]
+    }
 
 
 def admin_keyboard(texts: dict[str, str]) -> dict:
@@ -106,7 +133,10 @@ def admin_keyboard(texts: dict[str, str]) -> dict:
     return {
         "keyboard": [
             [texts["btn_edit"]],
-            [texts["btn_sample"], texts["btn_sheba"]],
+            [texts["btn_faq_edit"]],
+            [texts["btn_sample"]],
+            [texts["btn_sheba"]],
+            [texts["btn_faq"]],
         ]
     }
 
@@ -132,6 +162,9 @@ def match_button(text: str, texts: dict[str, str]) -> str | None:
     pairs = (
         ("sample", texts["btn_sample"]),
         ("sheba", texts["btn_sheba"]),
+        ("faq", texts["btn_faq"]),
+        ("faq_edit", texts["btn_faq_edit"]),
+        ("faq_back", texts["btn_faq_back"]),
         ("edit", texts["btn_edit"]),
         ("back", texts["btn_back"]),
         ("cancel", texts["btn_cancel"]),
@@ -161,6 +194,55 @@ def format_key_list(texts: dict[str, str]) -> str:
     for index, key in enumerate(TEXT_KEYS, start=1):
         lines.append(f"{index}. {key} — {KEY_HELP[key]}")
     return "\n".join(lines)
+
+
+def _topic_label(action: str | None, texts: dict[str, str]) -> str | None:
+    """کد آخرین کار را به برچسب مشتری تبدیل می‌کند. کد ناشناس یعنی موضوعی در کار نیست."""
+    key = {
+        "sample": "btn_sample",
+        "sheba": "btn_sheba",
+        "faq": "btn_faq",
+        "excel": "topic_excel",
+    }.get(action or "")
+    if not key:
+        return None
+    label = (texts.get(key) or "").strip()
+    return label or None
+
+
+def _greeting(texts: dict[str, str], profile: UserProfile) -> str:
+    """خط اول /start.
+
+    message_count بعد از ثبت همین پیام حساب می‌شود، پس ۱ یعنی اولین بازدید.
+    موضوع فقط وقتی گفته می‌شود که واقعاً در پرونده ذخیره شده باشد.
+    """
+    name = profile.first_name
+    if profile.message_count <= 1:
+        if name:
+            return render(texts["welcome_first"], name=name)
+        return texts["welcome"]
+    topic = _topic_label(profile.last_action, texts)
+    if topic and name:
+        return render(texts["welcome_back_topic"], name=name, topic=topic)
+    if topic:
+        return render(texts["welcome_back_topic_plain"], topic=topic)
+    if name:
+        return render(texts["welcome_back"], name=name)
+    return texts["welcome_back_plain"]
+
+
+def compose_customer_text(texts: dict[str, str], profile: UserProfile | None) -> str:
+    """متن منوی مشتری.
+
+    profile خالی یعنی خوش‌آمد عمومی: پایگاه نیست، خواندنش خطا داده، یا این پیام /start نبوده.
+    جملهٔ فایل حقوق همیشه ته متن است تا پیش از آپلود دیده شود.
+    """
+    blocks = [texts["welcome"] if profile is None else _greeting(texts, profile)]
+    for key in ("welcome_hint", "excel_upload_hint"):
+        extra = (texts.get(key) or "").strip()
+        if extra:
+            blocks.append(extra)
+    return "\n\n".join(part.strip() for part in blocks if part and part.strip())
 
 
 def _is_xlsx(name: str, mime: str) -> bool:
@@ -219,6 +301,48 @@ async def _remember_user(update: dict, ctx: BotContext) -> None:
         print("user upsert failed:", type(exc).__name__)
 
 
+async def _load_profile(ctx: BotContext, user_id: str) -> UserProfile | None:
+    """پروندهٔ همین کاربر را برای خوش‌آمد می‌خواند.
+
+    نبودن متد get (پایگاه قدیمی یا ساختگی ناقص) و هر خطای خواندن، None برمی‌گرداند
+    تا /start با متن عمومی ادامه پیدا کند.
+    """
+    if ctx.users is None:
+        return None
+    getter = getattr(ctx.users, "get", None)
+    if not callable(getter):
+        return None
+    try:
+        numeric = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    try:
+        profile = await getter(numeric)
+    except Exception as exc:
+        print("user get failed:", type(exc).__name__)
+        return None
+    if not isinstance(profile, UserProfile):
+        return None
+    return profile
+
+
+async def _note_action(ctx: BotContext, user_id: str, action: str) -> None:
+    """آخرین کار را ذخیره می‌کند. خطا این‌جا خورده می‌شود تا گفتگو نشکند."""
+    if ctx.users is None:
+        return
+    setter = getattr(ctx.users, "set_last_action", None)
+    if not callable(setter):
+        return
+    try:
+        numeric = int(user_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        await setter(numeric, action)
+    except Exception as exc:
+        print("last action failed:", type(exc).__name__)
+
+
 async def handle_update(update: dict, ctx: BotContext) -> None:
     """یک آپدیت بله را پردازش می‌کند: یا callback، یا پیام.
 
@@ -275,16 +399,14 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             return
         await ctx.client.send_message(chat_id, body, reply_markup=reply_markup)  # type: ignore[attr-defined]
 
-    async def show_menu() -> None:
+    async def show_menu(personal: bool = False) -> None:
         # خوش‌آمد مدیر و کاربر جداست تا مشتری دکمهٔ ویرایش متن را نبیند.
+        # personal فقط برای /start است تا «خوش برگشتی» وسط انصراف تکرار نشود.
         if is_admin:
             await reply(texts["admin_intro"], admin_keyboard(texts))
             return
-        parts = [texts["welcome"].strip()]
-        hint = texts["welcome_hint"].strip()
-        if hint:
-            parts.append(hint)
-        await reply("\n\n".join(part for part in parts if part), user_keyboard(texts))
+        profile = await _load_profile(ctx, user_id) if personal else None
+        await reply(compose_customer_text(texts, profile), user_keyboard(texts))
 
     # فایل را قبل از متن بررسی می‌کنیم. ارسال اکسل هر جریان نیمه‌کاره (شبا یا ویرایش) را می‌بندد.
     document = message.get("document")
@@ -309,7 +431,7 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if command == "/start":
         await ctx.states.clear(user_id)
         print(f"start user_id={user_id} admin={is_admin}")
-        await show_menu()
+        await show_menu(personal=True)
         return
     if command == "/cancel":
         await ctx.states.clear(user_id)
@@ -350,6 +472,23 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         await _save_text(raw_text, state, ctx, texts, reply, is_admin, user_id)
         return
 
+    # متن پرسش و پاسخ ممکن است شبیه برچسب دکمه باشد. این دو جریان را قبل از دکمه‌ها می‌گیریم
+    # و فقط انصراف قطعشان می‌کند، مثل ویرایش متن.
+    if flow in {"faq_edit_q", "faq_edit_a"}:
+        if not is_admin:
+            await ctx.states.clear(user_id)
+            await reply(texts["not_admin"], user_keyboard(texts))
+            return
+        if match_button(raw_text, texts) == "cancel":
+            await ctx.states.clear(user_id)
+            await reply(texts["cancelled"], menu_keyboard(texts, is_admin))
+            return
+        if flow == "faq_edit_q":
+            await _save_faq_question(raw_text, state, ctx, texts, reply, user_id)
+            return
+        await _save_faq_answer(raw_text, state, ctx, texts, reply, is_admin, user_id)
+        return
+
     action = match_button(raw_text, texts)
     if action in {"back", "cancel"}:
         await ctx.states.clear(user_id)
@@ -359,11 +498,23 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         return
     if action == "sample":
         await ctx.states.clear(user_id)
+        await _note_action(ctx, user_id, "sample")
         await _send_sample(ctx, texts, reply, chat_id, is_admin)
         return
     if action == "sheba":
         await ctx.states.set(user_id, {"flow": "sheba"})
+        await _note_action(ctx, user_id, "sheba")
         await reply(texts["sheba_prompt"], cancel_keyboard(texts))
+        return
+    if action in {"faq", "faq_back"}:
+        await _note_action(ctx, user_id, "faq")
+        await _show_faq_list(ctx, texts, reply, user_id)
+        return
+    if action == "faq_edit":
+        if not is_admin:
+            await reply(texts["not_admin"], user_keyboard(texts))
+            return
+        await _show_faq_admin(ctx, texts, reply, user_id)
         return
     if action == "edit":
         if not is_admin:
@@ -395,6 +546,22 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
 
     if flow == "sheba":
         await _handle_sheba(raw_text, ctx, texts, reply, user_id, is_admin)
+        return
+
+    if flow == "faq_admin":
+        if not is_admin:
+            await ctx.states.clear(user_id)
+            await reply(texts["not_admin"], user_keyboard(texts))
+            return
+        await _handle_faq_admin_text(raw_text, ctx, texts, reply, user_id)
+        return
+
+    if flow == "faq":
+        await _handle_faq_choice(raw_text, ctx, texts, reply, user_id)
+        return
+
+    # دکمهٔ پرسش ممکن است از کیبورد قبلی مانده باشد. شمارهٔ تنها این‌جا بازش نمی‌کند.
+    if await _open_faq_label(raw_text, ctx, texts, reply, user_id):
         return
 
     # نه دستور بود، نه دکمه، نه فایل. راهنمای کوتاه می‌فرستیم و منو را دوباره نشان می‌دهیم.
@@ -519,6 +686,8 @@ async def _handle_document(
     if not _is_xlsx(name, mime):
         await reply(texts["excel_bad_type"], markup)
         return
+    # نوع فایل درست است؛ حتی اگر دانلود بعداً بشکند، آخرین کار «ارسال فایل حقوق» مانده است.
+    await _note_action(ctx, user_id, "excel")
     size = document.get("file_size")
     if isinstance(size, (int, float)) and not isinstance(size, bool) and size > MAX_DOWNLOAD_BYTES:
         await reply(texts["excel_too_large"], markup)
@@ -570,3 +739,201 @@ async def _handle_document(
         return
 
     await reply(texts["excel_ack"], markup)
+
+
+async def _faq_items(ctx: BotContext) -> list[FaqItem]:
+    """فهرست پرسش‌ها. خطای KV به فهرست خالی تبدیل می‌شود تا گفتگو قطع نشود."""
+    if ctx.faq is None:
+        return []
+    try:
+        return await ctx.faq.list_items()
+    except Exception as exc:
+        print("faq load failed:", type(exc).__name__)
+        return []
+
+
+def _faq_markup(texts: dict[str, str], items: list[FaqItem]) -> dict:
+    if not items:
+        return back_keyboard(texts)
+    return faq_keyboard(items, texts["btn_faq_back"], texts["btn_back"])
+
+
+async def _show_faq_list(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    """فهرست پرسش‌ها را نشان می‌دهد و جریان را روی faq می‌گذارد تا شماره هم جواب بدهد."""
+    items = await _faq_items(ctx)
+    await ctx.states.set(user_id, {"flow": "faq"})
+    if not items:
+        await reply(texts["faq_empty"], back_keyboard(texts))
+        return
+    await reply(format_faq_menu(texts["faq_intro"], items), _faq_markup(texts, items))
+
+
+async def _handle_faq_choice(
+    raw_text: str,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    items = await _faq_items(ctx)
+    found = match_faq_item(raw_text, items, allow_number=True)
+    if found is None:
+        await reply(texts["faq_bad_choice"], _faq_markup(texts, items))
+        return
+    await _note_action(ctx, user_id, "faq")
+    await reply(format_faq_answer(found), _faq_markup(texts, items))
+
+
+async def _open_faq_label(
+    raw_text: str,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> bool:
+    """اگر متن دقیقاً برچسب یک پرسش باشد پاسخ را باز می‌کند. شمارهٔ تنها را نادیده می‌گیرد."""
+    items = await _faq_items(ctx)
+    found = match_faq_item(raw_text, items, allow_number=False)
+    if found is None:
+        return False
+    await ctx.states.set(user_id, {"flow": "faq"})
+    await _note_action(ctx, user_id, "faq")
+    await reply(format_faq_answer(found), _faq_markup(texts, items))
+    return True
+
+
+async def _show_faq_admin(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    prefix: str = "",
+) -> None:
+    """منوی ویرایش پرسش برای مدیر. prefix تأیید ذخیره یا حذف است که بالای فهرست می‌آید."""
+    await ctx.states.set(user_id, {"flow": "faq_admin"})
+    items = await _faq_items(ctx)
+    if items:
+        body = format_faq_menu(texts["faq_admin_prompt"], items)
+    else:
+        body = texts["faq_admin_prompt"].strip() + "\n\n" + texts["faq_empty"].strip()
+    lead = prefix.strip()
+    if lead:
+        body = lead + "\n\n" + body
+    await reply(body, back_keyboard(texts))
+
+
+def _faq_admin_bad(texts: dict[str, str]) -> str:
+    return render(texts["faq_admin_bad"], add=texts["faq_cmd_add"], delete=texts["faq_cmd_delete"])
+
+
+async def _handle_faq_admin_text(
+    raw_text: str,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    items = await _faq_items(ctx)
+    parsed = parse_faq_admin_input(
+        raw_text,
+        add_word=texts["faq_cmd_add"],
+        delete_word=texts["faq_cmd_delete"],
+        count=len(items),
+    )
+    if parsed is None or parsed[0] == "invalid":
+        await reply(_faq_admin_bad(texts), back_keyboard(texts))
+        return
+    kind, number = parsed
+    if kind == "delete" and number is not None:
+        if ctx.faq is None:
+            await reply(texts["faq_empty"], back_keyboard(texts))
+            return
+        removed = await ctx.faq.delete(items[number - 1].id)
+        if not removed:
+            await reply(_faq_admin_bad(texts), back_keyboard(texts))
+            return
+        await _show_faq_admin(ctx, texts, reply, user_id, prefix=texts["faq_deleted"])
+        return
+    if kind == "add":
+        if len(items) >= MAX_FAQ_ITEMS:
+            await reply(render(texts["faq_full"], max=MAX_FAQ_ITEMS), back_keyboard(texts))
+            return
+        await ctx.states.set(user_id, {"flow": "faq_edit_q"})
+        await reply(render(texts["faq_ask_question"], current="—"), cancel_keyboard(texts))
+        return
+    if kind == "edit" and number is not None:
+        item = items[number - 1]
+        await ctx.states.set(user_id, {"flow": "faq_edit_q", "id": item.id})
+        await reply(
+            render(texts["faq_ask_question"], current=clip(item.question, 800)),
+            cancel_keyboard(texts),
+        )
+
+
+async def _save_faq_question(
+    raw_text: str,
+    state: dict,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    """پرسش تازه را در وضعیت نگه می‌دارد و پاسخ را می‌پرسد. هنوز در KV نوشته نمی‌شود."""
+    question = raw_text.strip()
+    if not question:
+        await reply(texts["admin_empty"], cancel_keyboard(texts))
+        return
+    if len(question) > MAX_QUESTION_LENGTH:
+        await reply(texts["admin_too_long"], cancel_keyboard(texts))
+        return
+    item_id = state.get("id")
+    current_answer = "—"
+    if isinstance(item_id, str):
+        for item in await _faq_items(ctx):
+            if item.id == item_id:
+                current_answer = clip(item.answer, 800)
+                break
+    next_state: dict = {"flow": "faq_edit_a", "question": question}
+    if isinstance(item_id, str) and item_id:
+        next_state["id"] = item_id
+    await ctx.states.set(user_id, next_state)
+    await reply(render(texts["faq_ask_answer"], current=current_answer), cancel_keyboard(texts))
+
+
+async def _save_faq_answer(
+    raw_text: str,
+    state: dict,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    is_admin: bool,
+    user_id: str,
+) -> None:
+    """پرسش و پاسخ را با هم در KV می‌نویسد. شناسهٔ تازه فقط برای پرسش جدید ساخته می‌شود."""
+    answer = raw_text.strip()
+    if not answer:
+        await reply(texts["admin_empty"], cancel_keyboard(texts))
+        return
+    if len(answer) > MAX_ANSWER_LENGTH:
+        await reply(texts["admin_too_long"], cancel_keyboard(texts))
+        return
+    question = state.get("question")
+    if not isinstance(question, str) or not question.strip() or ctx.faq is None:
+        await ctx.states.clear(user_id)
+        await reply(_faq_admin_bad(texts), menu_keyboard(texts, is_admin))
+        return
+    item_id = state.get("id")
+    if not isinstance(item_id, str) or not item_id:
+        item_id = fresh_faq_id(await _faq_items(ctx))
+    try:
+        await ctx.faq.upsert(FaqItem(id=item_id, question=question.strip(), answer=answer))
+    except FaqFullError:
+        await ctx.states.clear(user_id)
+        await reply(render(texts["faq_full"], max=MAX_FAQ_ITEMS), menu_keyboard(texts, is_admin))
+        return
+    await _show_faq_admin(ctx, texts, reply, user_id, prefix=texts["faq_saved"])

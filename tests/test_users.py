@@ -7,6 +7,8 @@
 import asyncio
 
 from users import (
+    GET_USER_SQL_LEGACY,
+    SET_LAST_ACTION_SQL,
     UPSERT_SQL,
     D1UserStore,
     MemoryUserStore,
@@ -57,6 +59,24 @@ def test_memory_store_preserves_first_seen_and_sorts_recent_first():
         assert saved.is_admin is True
         assert [row.user_id for row in await store.list_recent(10)] == [7, 8]
         assert len(await store.list_recent(1)) == 1
+
+    _run(scenario())
+
+
+def test_last_action_survives_touch_and_unknown_codes_are_ignored():
+    async def scenario():
+        store = MemoryUserStore()
+        await store.touch(_profile(7, "2026-10-01T00:00:00Z"))
+        await store.set_last_action(7, "sheba")
+        await store.set_last_action(7, "invented")
+        await store.touch(_profile(7, "2026-10-01T02:00:00Z", username="ali2"))
+        saved = await store.get(7)
+        assert saved is not None
+        assert saved.last_action == "sheba"
+        assert saved.message_count == 2
+        assert saved.username == "ali2"
+        assert await store.get(99) is None
+        await store.set_last_action(99, "faq")
 
     _run(scenario())
 
@@ -159,6 +179,56 @@ def test_d1_store_binds_upsert_and_reads_rows():
         assert rows[0].message_count == 3
         assert rows[0].username == "ali"
         assert rows[0].is_admin is False
+
+        found = await store.get(7)
+        assert found is not None
+        assert found.message_count == 3
+        assert found.last_action is None
+        await store.set_last_action(7, "excel")
+        await store.set_last_action(7, "nope")
+        assert db.log[-1] == ("run", SET_LAST_ACTION_SQL, ("excel", 7))
+
+    _run(scenario())
+
+
+def test_d1_get_falls_back_when_last_action_column_is_missing():
+    """مهاجرت ۰۰۰۲ نرفته باشد: نام می‌ماند و موضوع ساخته نمی‌شود."""
+
+    class _LegacyStmt(_Stmt):
+        async def all(self):
+            self.log.append(("all", self.sql, self.params))
+            if "last_action" in self.sql:
+                raise RuntimeError("no such column: last_action")
+            return _JsResult({"success": True, "results": list(self._rows)})
+
+    class _LegacyDB(_DB):
+        def prepare(self, sql: str) -> _LegacyStmt:
+            return _LegacyStmt(self.log, sql, self.rows)
+
+    async def scenario():
+        db = _LegacyDB(
+            [
+                {
+                    "user_id": 7,
+                    "username": None,
+                    "first_name": "علی",
+                    "last_name": None,
+                    "language_code": "fa",
+                    "is_admin": 0,
+                    "first_seen_at": "2026-10-01T00:00:00Z",
+                    "last_seen_at": "2026-10-01T00:00:00Z",
+                    "message_count": 4,
+                }
+            ]
+        )
+        profile = await D1UserStore(db).get(7)
+        assert profile is not None
+        assert profile.first_name == "علی"
+        assert profile.message_count == 4
+        assert profile.last_action is None
+        selects = [sql for kind, sql, _params in db.log if kind == "all"]
+        assert any("last_action" in sql for sql in selects)
+        assert GET_USER_SQL_LEGACY in selects
 
     _run(scenario())
 
