@@ -1,12 +1,16 @@
-"""Key/value adapters used by texts, conversation state, and update de-dupe.
+"""رابط کلید/مقدار برای متن‌ها، وضعیت گفتگو و جلوگیری از پردازش دوباره.
 
-`MemoryKV` is for unit tests. `CloudflareKV` wrapps a Workers KV binding.
+خود بازو مستقیم به KV کلادفلر وصل نیست. MemoryKV در تست‌ها جای پایگاه را می‌گیرد
+و CloudflareKV همان متدها را به باندینگ واقعی TEXTS وصل می‌کند.
+اگر امضای get/put/delete یکی بماند، بقیهٔ کد فرق این دو را نمی‌فهمد.
 """
 
 from __future__ import annotations
 
 
 class MemoryKV:
+    """دیکشنری داخل حافظه. فقط برای pytest است و با خاموش شدن برنامه پاک می‌شود."""
+
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.ttls: dict[str, int | None] = {}
@@ -24,7 +28,7 @@ class MemoryKV:
 
 
 class CloudflareKV:
-    """Workers KV binding. `expirationTtl` is in seconds and must be at least 60."""
+    """باندینگ KV ورکر. expirationTtl به ثانیه است و کلادفلر کمتر از ۶۰ ثانیه را نمی‌پذیرد."""
 
     def __init__(self, binding: object) -> None:
         self.binding = binding
@@ -36,8 +40,8 @@ class CloudflareKV:
         return str(value)
 
     async def put(self, key: str, value: str, ttl: int | None = None) -> None:
-        # KV's JS API takes an options object, not a keyword argument:
-        # put(key, value, { expirationTtl }). Minimum TTL is 60 seconds.
+        # رابط جاوااسکریپت KV آرگومان نام‌دار نمی‌گیرد؛ گزینه‌ها یک شیء جدا هستند.
+        # کمترین عمر مجاز ۶۰ ثانیه است. بدون ttl مقدار می‌ماند تا خودمان پاکش کنیم.
         if ttl is None:
             await self.binding.put(key, value)  # type: ignore[attr-defined]
         else:

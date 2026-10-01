@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Register this Worker's HTTPS URL with Bale.
+"""آدرس HTTPS ورکر را در بله به‌عنوان وب‌هوک ثبت می‌کند.
 
-Usage (from the repo root):
+از ریشهٔ مخزن:
 
     export BALE_TOKEN=...
     export WEBHOOK_URL=https://<worker>/webhook
-    # If WEBHOOK_SECRET is set, the URL must include it:
+    # اگر WEBHOOK_SECRET تنظیم شده، باید ته آدرس باشد:
     #   https://<worker>/webhook/<WEBHOOK_SECRET>
     uv run python scripts/set_webhook.py
 
-The script also reads `.dev.vars` or `.env` for any variable that is not
-already in the environment. It never prints the token.
+اگر متغیر از قبل در محیط نباشد، از .dev.vars یا .env خوانده می‌شود.
+توکن هیچ‌وقت چاپ نمی‌شود.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 
 
 def _load_file(path: Path) -> None:
+    """خط‌های KEY=value را بار می‌کند. مقدار موجود در محیط را عوض نمی‌کند تا راز پوسته‌تان نپرد."""
     if not path.is_file():
         return
     for line in path.read_text(encoding="utf-8").splitlines():
@@ -35,6 +36,7 @@ def _load_file(path: Path) -> None:
 
 
 def main() -> int:
+    """setWebhook را صدا می‌زند. کد خروج ۰ یعنی بله درخواست را پذیرفته است."""
     root = Path(__file__).resolve().parents[1]
     _load_file(root / ".dev.vars")
     _load_file(root / ".env")

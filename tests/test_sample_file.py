@@ -1,3 +1,5 @@
+"""فایل نمونهٔ داخل مخزن باید با همان مبدلی که بازو استفاده می‌کند خوانده شود."""
+
 from pathlib import Path
 
 from excel_convert import convert_excel_to_text

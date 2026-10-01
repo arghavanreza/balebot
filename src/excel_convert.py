@@ -1,10 +1,9 @@
-"""Excel (.xlsx) → text conversion.
+"""تبدیل فایل اکسل (.xlsx) به متن.
 
-TODO: نگاشت ستون‌ها هنوز نهایی نشده است و بعداً سفارشی می‌شود.
-The default below is deliberate and temporary: the first worksheet is emitted
-as tab-separated rows (header included), UTF-8, with no column renaming.
-Replace `convert_excel_to_text` when the real mapping is decided. Callers
-depend only on `bytes -> str`, so the rest of the bot can stay unchanged.
+TODO: نگاشت ستون‌ها هنوز نهایی نشده و بعداً سفارشی می‌شود.
+رفتار فعلی عمداً موقت است: فقط شیت اول، هر سطر با تب، عنوان هم هست، خروجی UTF-8.
+وقتی قالب واقعی معلوم شد فقط convert_excel_to_text را عوض کنید.
+باقی بازو فقط «بایت داخل، رشته بیرون» را می‌شناسد و لازم نیست دست بخورد.
 """
 
 from __future__ import annotations
@@ -17,20 +16,21 @@ from zipfile import BadZipFile
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
-# Safety caps so a hostile or accidental sheet cannot produce a huge upload.
+# سقف امنیت: یک شیت خیلی بزرگ نباید فایل متنی غول‌پیکر برای مدیر بسازد.
 MAX_ROWS = 5000
 MAX_COLS = 50
 _TRUNCATION_NOTE = "… سطرهای بعدی به‌خاطر سقف خروجی حذف شدند"
 
 
 class ExcelConvertError(Exception):
-    """The bytes were not a readable .xlsx workbook."""
+    """بایت‌ها یک اکسل خوانا نبودند. بازو این خطا را به پیام فارسی برای فرستنده ترجمه می‌کند."""
 
 
 def format_cell(value: object) -> str:
-    """Render one cell as a single TSV field (no tabs or newlines)."""
+    """یک خانه را به یک فیلد متنی تبدیل می‌کند. تب و خط جدید داخل خانه حذف می‌شوند تا ستون‌ها نریزند."""
     if value is None:
         return ""
+    # bool زیرکلاس int است. اگر این شاخه بعد از int باشد، true به «1» تبدیل می‌شود.
     if isinstance(value, bool):
         text = "true" if value else "false"
     elif isinstance(value, datetime):
@@ -47,19 +47,20 @@ def format_cell(value: object) -> str:
 
 
 def convert_excel_to_text(data: bytes) -> str:
-    """Convert the first worksheet of an .xlsx file to tab-separated text.
+    """شیت اول را به متن جداشده با تب تبدیل می‌کند.
 
     TODO: ستون‌ها (مثلاً name / amount / sheba) بعداً به قالب نهایی نگاشت می‌شوند.
-    Until then, every non-empty row of the first sheet is written in order.
-    Formula cells are exported as the formula text (`data_only=False`), because
-    a file that has never been opened by Excel has no cached result.
-
-    Other sheets are ignored. Completely empty rows are skipped.
+    تا آن موقع هر سطر غیرخالی شیت اول، به ترتیب، نوشته می‌شود.
+    فرمول را به‌صورت خود متن فرمول می‌نویسیم نه نتیجهٔ محاسبه‌شده، چون فایلی که
+    در اکسل باز نشده مقدار ذخیره‌شده ندارد.
+    شیت‌های بعدی نادیده گرفته می‌شوند. سطر کاملاً خالی حذف می‌شود.
     """
     if not isinstance(data, (bytes, bytearray)) or not data:
         raise ExcelConvertError("empty workbook")
 
     try:
+        # read_only حافظه را برای شیت بزرگ کمتر می‌خورد.
+        # data_only=False یعنی فرمول را دست‌نخورده ببینیم، نه خانهٔ خالیِ بدون کش.
         workbook = load_workbook(
             BytesIO(bytes(data)),
             read_only=True,

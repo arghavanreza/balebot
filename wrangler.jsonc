@@ -1,39 +1,59 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
+  // نام ورکر روی کلادفلر. آدرس پیش‌فرض شبیه bale-excel-bot.<subdomain>.workers.dev می‌شود.
   "name": "bale-excel-bot",
+  // فایلی که با هر درخواست اجرا می‌شود.
   "main": "src/entry.py",
   "compatibility_date": "2026-10-01",
+  // بدون این پرچم، کلادفلر کد پایتون را به‌عنوان ورکر نمی‌پذیرد.
   "compatibility_flags": ["python_workers"],
-  // Static sample workbook. The Worker reads it through the ASSETS binding.
-  // run_worker_first keeps /webhook on the Python handler instead of the asset router.
+  // فایل نمونهٔ اکسل به‌صورت دارایی ثابت کنار ورکر می‌رود و با نام ASSETS خوانده می‌شود.
+  // run_worker_first یعنی /webhook اول به پایتون برسد، نه به خود فایل‌های ثابت.
   "assets": {
     "directory": "./assets",
     "binding": "ASSETS",
     "run_worker_first": true
   },
-  // Create the namespace, then replace the placeholder id:
+  // KV برای متن‌های قابل ویرایش، وضعیت گفتگو و جلوگیری از پردازش دوباره.
+  // اگر این namespace را تازه می‌سازید:
   //   npx wrangler kv namespace create TEXTS
+  // و id چاپ‌شده را زیر همین binding بگذارید.
   "kv_namespaces": [
     {
       "binding": "TEXTS",
       "id": "171d57b5a1b24db3bdcb0e77b7fb102d"
     }
   ],
-  // Optional R2 alternative for sample.xlsx (key: sample.xlsx).
-  // Uncomment after `npx wrangler r2 bucket create bale-bot-files`
-  // and `npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx`.
-  // When FILES is bound, it is preferred over the static asset.
+  // پایگاه D1 کاربران. نام باندینگ در کد DB است (self.env.DB).
+  // database_id زیر جای‌نگهدار است و شناسهٔ حساب واقعی نیست.
+  // قبل از deploy این دو دستور را بزنید و شناسهٔ چاپ‌شده را جایگزین کنید:
+  //   npx wrangler d1 create bale-bot-users
+  //   npx wrangler d1 migrations apply bale-bot-users --remote
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bale-bot-users",
+      "database_id": "00000000-0000-4000-8000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // جای اختیاری برای sample.xlsx در R2 (کلید فایل: sample.xlsx).
+  // بعد از این دو دستور، بلوک زیر را از کامنت دربیاورید:
+  //   npx wrangler r2 bucket create bale-bot-files
+  //   npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
+  // اگر FILES وصل باشد، بر فایل ثابت ASSETS اولویت دارد.
   // "r2_buckets": [
   //   {
   //     "binding": "FILES",
   //     "bucket_name": "bale-bot-files"
   //   }
   // ],
-  // Poll getUpdates every minute. Needed when Cloudflare error 1010 blocks
-  // Bale's webhook User-Agent on *.workers.dev (Browser Integrity Check).
+  // هر دقیقه getUpdates. لازم است چون خطای ۱۰۱۰ کلادفلر گاهی وب‌هوک بله را
+  // روی دامنهٔ workers.dev قبل از رسیدن به پایتون قطع می‌کند.
   "triggers": {
     "crons": ["* * * * *"]
   },
+  // لاگ و متریک ورکر در داشبورد کلادفلر روشن باشد.
   "observability": {
     "enabled": true
   }

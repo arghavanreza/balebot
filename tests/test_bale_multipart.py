@@ -1,3 +1,5 @@
+"""ساخت بدنهٔ multipart و آدرس‌های API، بدون تماس واقعی با بله."""
+
 from bale import encode_multipart, file_url, method_url, parse_api_response, redact_url
 from bale import BaleError
 

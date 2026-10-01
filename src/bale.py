@@ -1,10 +1,11 @@
-"""Small Bale Bot API client.
+"""کلاینت کوچک API بازوی بله.
 
-Calls `https://tapi.bale.ai` with JSON or raw multipart HTTPS. This does not
-use python-telegram-bot (it is not a fit for the Workers runtime).
+همهٔ تماس‌ها به https://tapi.bale.ai می‌رود؛ پیام متنی با JSON و فایل با multipart.
+از کتابخانهٔ تلگرام استفاده نمی‌کنیم چون با محیط ورکر پایتون جور نیست و بله هم
+همان شکل درخواست را، روی دامنهٔ خودش، می‌خواهد.
 
-`DryRunBale` records the same methods and performs no network I/O. The Worker
-uses it when `DRY_RUN=1`.
+DryRunBale همان متدها را دارد ولی به شبکه وصل نمی‌شود و کارها را در فهرست actions
+نگه می‌دارد. ورکر وقتی DRY_RUN=1 باشد از همین کلاس استفاده می‌کند تا بشود محلی تست کرد.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ _TOKEN_IN_URL = re.compile(r"/bot[^/\s]+")
 
 
 class BaleError(Exception):
-    """Bale returned an error, or the HTTP call failed."""
+    """بله خطا برگردانده یا خود تماس HTTP شکست خورده. متن توکن داخل این خطا نیست."""
 
     def __init__(self, message: str, status: int | None = None, payload: Any = None) -> None:
         super().__init__(message)
@@ -31,20 +32,24 @@ class BaleError(Exception):
 
 
 def method_url(token: str, method: str) -> str:
+    """آدرس یک متد، مثل sendMessage. توکن بخشی از مسیر است، نه هدر."""
     return f"{API_ROOT}/bot{token}/{method}"
 
 
 def file_url(token: str, file_path: str) -> str:
+    """آدرس دانلود فایل. getFile فقط مسیر نسبی می‌دهد و دانلود یک درخواست جداست."""
     if file_path.startswith("https://") or file_path.startswith("http://"):
         return file_path
     return f"{API_ROOT}/file/bot{token}/{file_path.lstrip('/')}"
 
 
 def redact_url(url: str) -> str:
+    """توکن را از آدرس برمی‌دارد تا اگر جایی لاگ شد، راز بازو لو نرود."""
     return _TOKEN_IN_URL.sub("/bot<token>", url)
 
 
 def normalize_chat_id(chat_id: object) -> int | str:
+    """شناسهٔ عددی را int می‌کند. بله شناسهٔ رشته‌ای عددی را هم می‌پذیرد ولی int مطمئن‌تر است."""
     if isinstance(chat_id, int) and not isinstance(chat_id, bool):
         return chat_id
     text = str(chat_id).strip()
@@ -57,7 +62,7 @@ def encode_multipart(
     fields: list[tuple[str, str]],
     files: list[tuple[str, str, bytes, str]],
 ) -> tuple[bytes, str]:
-    """Build a multipart body. Filenames must be ASCII and quote-free."""
+    """بدنهٔ multipart برای sendDocument. نام فایل باید ASCII و بدون گیومه باشد وگرنه هدر خراب می‌شود."""
     boundary = "----bale" + uuid.uuid4().hex
     chunks: list[bytes] = []
     for name, value in fields:
@@ -87,6 +92,7 @@ def encode_multipart(
 
 
 def parse_api_response(status: int, body: str) -> Any:
+    """جواب بله را می‌خواند. اگر ok برابر false باشد خطا می‌دهیم، حتی وقتی HTTP موفق به نظر برسد."""
     try:
         data = json.loads(body) if body else {}
     except json.JSONDecodeError as exc:
@@ -102,6 +108,7 @@ def parse_api_response(status: int, body: str) -> Any:
 
 
 def _check_token(token: str) -> str:
+    """توکن خالی یا توکنی که خودش مسیر URL را بشکند قبول نمی‌شود."""
     token = (token or "").strip()
     if not token or any(char.isspace() or char in "/?#" for char in token):
         raise BaleError("invalid bot token")
@@ -109,6 +116,8 @@ def _check_token(token: str) -> str:
 
 
 class BaleClient:
+    """تماس واقعی با بله. توکن فقط این‌جا نگه داشته می‌شود و در لاگ چاپ نمی‌شود."""
+
     def __init__(self, token: str, timeout: float = 30.0) -> None:
         self.token = _check_token(token)
         self.timeout = timeout
@@ -120,6 +129,9 @@ class BaleClient:
         )
 
     def _post_json(self, method: str, payload: dict) -> Any:
+        # httpx این‌جا همگام است. تماس‌ها کوتاه‌اند و خطا را به BaleError تبدیل می‌کنیم
+        # تا لایهٔ گفتگو به‌جای جزئیات شبکه، یک نوع خطای مشخص ببیند.
+
         url = method_url(self.token, method)
         try:
             with self._client() as client:
@@ -129,6 +141,7 @@ class BaleClient:
         return parse_api_response(response.status_code, response.text)
 
     async def send_message(self, chat_id: object, text: str, reply_markup: dict | None = None) -> Any:
+        """یک پیام متنی. reply_markup همان کیبورد پایین چت است."""
         payload: dict[str, Any] = {"chat_id": normalize_chat_id(chat_id), "text": text}
         if reply_markup:
             payload["reply_markup"] = reply_markup
@@ -143,6 +156,7 @@ class BaleClient:
         mime: str | None = None,
         reply_markup: dict | None = None,
     ) -> Any:
+        """ارسال فایل. اکسل تبدیل‌شده و نمونهٔ اکسل هر دو از این متد می‌روند."""
         fields: list[tuple[str, str]] = [("chat_id", str(normalize_chat_id(chat_id)))]
         if caption:
             fields.append(("caption", caption))
@@ -165,6 +179,7 @@ class BaleClient:
         return parse_api_response(response.status_code, response.text)
 
     async def get_file_bytes(self, file_id: str) -> bytes:
+        """اول مسیر فایل را از getFile می‌گیرد، بعد خود بایت‌ها را دانلود می‌کند."""
         result = self._post_json("getFile", {"file_id": file_id})
         if not isinstance(result, dict):
             raise BaleError("getFile returned no file")
@@ -182,18 +197,22 @@ class BaleClient:
         return response.content
 
     async def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> Any:
+        """چرخندهٔ روی دکمهٔ شیشه‌ای را می‌بندد. بدون این جواب، بله چند لحظه «در حال پردازش» نشان می‌دهد."""
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text:
             payload["text"] = text[:200]
         return self._post_json("answerCallbackQuery", payload)
 
     async def set_webhook(self, url: str) -> Any:
+        """به بله می‌گوید آپدیت‌ها را به این آدرس HTTPS بفرستد."""
         return self._post_json("setWebhook", {"url": url})
 
     async def delete_webhook(self) -> Any:
+        """وب‌هوک را برمی‌دارد تا بشود دوباره با getUpdates صف را خواند."""
         return self._post_json("deleteWebhook", {})
 
     async def get_updates(self, offset: int | None = None, limit: int = 100, timeout: int = 0) -> Any:
+        """آپدیت‌های نرسیده را می‌کشد. timeout صفر یعنی منتظر پیام تازه نمان؛ مناسب cron است."""
         payload: dict[str, Any] = {"limit": limit, "timeout": timeout}
         if offset is not None:
             payload["offset"] = offset
@@ -201,7 +220,7 @@ class BaleClient:
 
 
 class DryRunBale:
-    """Same surface as `BaleClient`, with the outgoing calls kept in `actions`."""
+    """همان شکل BaleClient، بدون شبکه. هر فراخوانی در actions می‌ماند تا تست ببیند چه فرستاده می‌شد."""
 
     def __init__(self) -> None:
         self.actions: list[dict[str, Any]] = []

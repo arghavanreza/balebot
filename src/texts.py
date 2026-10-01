@@ -1,8 +1,9 @@
-"""Customer-facing strings.
+"""متن‌هایی که مشتری و مدیر می‌بینند.
 
-Defaults live here. On the Worker they are copied into KV (`bot_texts`) the
-first time they are read, then edited at runtime from the admin menu.
-Code only falls back to these defaults when KV has no override for a key.
+پیش‌فرض‌ها همین‌جا هستند. بار اول که ورکر آن‌ها را بخواند در KV با کلید bot_texts
+ذخیره می‌شوند و بعد از منوی مدیر عوض می‌شوند، بدون استقرار مجدد.
+اگر مدیر یک کلید را ذخیره کرده باشد، عوض کردن پیش‌فرض در کد آن مقدار را بازنویسی نمی‌کند.
+کلید تازه‌ای که در نسخهٔ بعدی کد اضافه شود با پیش‌فرض پر می‌شود و بقیهٔ ویرایش‌ها می‌مانند.
 """
 
 from __future__ import annotations
@@ -16,8 +17,8 @@ MAX_TEXT_LENGTH = 3500
 
 _PLACEHOLDER = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
-# key, default Persian text, short admin-facing description.
-# Descriptions are not sent to customers; they label the edit menu.
+# هر ردیف: کلید، متن پیش‌فرض فارسی، توضیح کوتاه برای خود منوی ویرایش.
+# توضیح سوم برای مشتری فرستاده نمی‌شود؛ فقط به مدیر می‌گوید این کلید چیست.
 _SPEC: tuple[tuple[str, str, str], ...] = (
     (
         "welcome",
@@ -34,6 +35,7 @@ _SPEC: tuple[tuple[str, str, str], ...] = (
         "admin_intro",
         "پنل مدیر فعال است.\n"
         "با «ویرایش متن» پیام‌ها و برچسب دکمه‌ها را عوض کنید.\n"
+        "برای دیدن کاربران اخیر دستور /users را بفرستید.\n"
         "ارسال فایل .xlsx برای شما هم مثل کاربران پردازش می‌شود و نتیجه به همین شناسهٔ مدیر می‌رسد.",
         "پیام شروع مخصوص مدیر",
     ),
@@ -165,7 +167,7 @@ class KeyValue(Protocol):
 
 
 def render(template: str, **kwargs: object) -> str:
-    """Replace `{name}` tokens. Unknown tokens and stray braces stay as written."""
+    """جای‌نگهدارهای {name} را پر می‌کند. نام ناشناس و آکولاد تکی دست‌نخورده می‌مانند تا متن مدیر خراب نشود."""
 
     values = {key: "" if value is None else str(value) for key, value in kwargs.items()}
 
@@ -179,12 +181,13 @@ def render(template: str, **kwargs: object) -> str:
 
 
 class TextRepository:
-    """KV-backed copy of `DEFAULT_TEXTS`. Missing keys are filled from defaults."""
+    """نسخهٔ KV از متن‌های پیش‌فرض. کلید غایب از همین پیش‌فرض‌ها پر می‌شود."""
 
     def __init__(self, kv: KeyValue) -> None:
         self.kv = kv
 
     async def snapshot(self) -> dict[str, str]:
+        """متن مؤثر هر کلید را برمی‌گرداند: پیش‌فرض، و روی آن هر چیزی که مدیر ذخیره کرده."""
         raw = await self.kv.get(_KV_KEY)
         stored: dict | None = None
         if raw:
@@ -201,12 +204,13 @@ class TextRepository:
                 if key in DEFAULT_TEXTS and isinstance(value, str):
                     merged[key] = value
 
-        # Seed on first read, and when a newer deploy adds a key.
+        # بار اول کل سند را می‌نویسیم. اگر کد کلید تازه آورده باشد فقط همان‌ها به سند قبلی اضافه می‌شوند.
         if stored is None or any(key not in stored for key in DEFAULT_TEXTS):
             await self.kv.put(_KV_KEY, json.dumps(merged, ensure_ascii=False))
         return merged
 
     async def update(self, key: str, value: str) -> None:
+        """یک کلید شناخته‌شده را عوض می‌کند. کلید خارج از فهرست عمداً خطا است تا سند KV کثیف نشود."""
         if key not in DEFAULT_TEXTS:
             raise KeyError(key)
         current = await self.snapshot()
