@@ -8,14 +8,15 @@ wrangler.jsonc با نام DB تعریف شده است. این ماژول دو �
 
 منطق گفتگو به خود D1 وصل نیست. تست‌ها از MemoryUserStore استفاده می‌کنند
 و ورکر از D1UserStore. هر دو touch، list_recent، get، set_last_action،
-set_phone، record_event و stats_between را دارند.
+set_phone، set_full_name، set_national_id، سپرده‌ها، record_event و stats_between را دارند.
 
 ستون last_action (مهاجرت ۰۰۰۲) فقط آخرین کار را نگه می‌دارد: sample، sheba،
 faq، excel یا single. خالی بودنش یعنی موضوعی برای «خوش برگشتی» ساخته نمی‌شود.
 ستون phone (مهاجرت ۰۰۰۳) شمارهٔ موبایل است و جدا از last_action به‌روز می‌شود
 تا ثبت شماره، موضوع خوش‌آمد را پاک نکند. تهی بودنش برای مدیر مجاز است و ردیف
-می‌تواند پیش از رسیدن شماره ساخته شود. برای مشتری، لایهٔ گفتگو در bot.py تا
-پر شدن همین ستون منوی خدمات را نشان نمی‌دهد. رویدادهای آمار در جدول events
+می‌تواند پیش از رسیدن شماره ساخته شود. برای مشتری، لایهٔ گفتگو در bot.py تا پر شدن شماره، سپس full_name و national_id
+(مهاجرت ۰۰۰۵) منوی خدمات را نشان نمی‌دهد. سپرده‌های مهر در جدول deposits
+(مهاجرت ۰۰۰۶) هستند و یکی از آن‌ها مبدأ واریز گروهی است. رویدادهای آمار در جدول events
 (مهاجرت ۰۰۰۴) هستند، نه روی خود ردیف کاربر.
 """
 
@@ -26,6 +27,7 @@ from datetime import datetime, timezone
 from typing import Protocol
 
 from phone import normalize_phone
+from sheba import is_mehr_sheba, validate_sheba
 from stats import (
     COUNT_ACTIVE_SQL,
     COUNT_KINDS_SQL,
@@ -109,6 +111,43 @@ SET_LAST_ACTION_SQL = "UPDATE users SET last_action = ? WHERE user_id = ?"
 # شماره جدا از upsert است تا پایگاهِ بدون ستون phone هنوز بتواند کاربر را ثبت کند.
 SET_PHONE_SQL = "UPDATE users SET phone = ? WHERE user_id = ?"
 
+# نام قانونی و کد ملی جدا از upsert هستند تا نام پروفایل بله این دو را پاک نکند.
+SET_FULL_NAME_SQL = "UPDATE users SET full_name = ? WHERE user_id = ?"
+SET_NATIONAL_ID_SQL = "UPDATE users SET national_id = ? WHERE user_id = ?"
+
+# خواندن وقتی مهاجرت ۰۰۰۵ اعمال شده باشد. اگر ستون نباشد، شکل قبلی امتحان می‌شود.
+GET_USER_SQL_FULL = """
+SELECT user_id, username, first_name, last_name, language_code,
+       is_admin, first_seen_at, last_seen_at, message_count, last_action, phone,
+       full_name, national_id
+FROM users
+WHERE user_id = ?
+""".strip()
+
+# سقف سپرده برای هر مشتری تا کیبورد شیشه‌ای از حد بله رد نشود.
+MAX_DEPOSITS = 15
+
+INSERT_DEPOSIT_SQL = """
+INSERT INTO deposits (user_id, sheba, label, is_active, created_at)
+VALUES (?, ?, ?, ?, ?)
+""".strip()
+
+LIST_DEPOSITS_SQL = """
+SELECT id, user_id, sheba, label, is_active, created_at
+FROM deposits
+WHERE user_id = ?
+ORDER BY id ASC
+""".strip()
+
+CLEAR_ACTIVE_SQL = "UPDATE deposits SET is_active = 0 WHERE user_id = ?"
+SET_ACTIVE_SQL = "UPDATE deposits SET is_active = 1 WHERE user_id = ? AND id = ?"
+DELETE_DEPOSIT_SQL = "DELETE FROM deposits WHERE user_id = ? AND id = ?"
+SELECT_DEPOSIT_SQL = """
+SELECT id, user_id, sheba, label, is_active, created_at
+FROM deposits
+WHERE user_id = ? AND sheba = ?
+""".strip()
+
 # کدهای مجاز. هر چیز دیگر در ستون نمی‌نشیند تا خوش‌آمد جملهٔ ناشناس نسازد.
 # single یعنی ویزارد انتقال تکی. excel هم آپلود لیست است و هم ورود به همان مرحله.
 LAST_ACTIONS = frozenset({"sample", "sheba", "faq", "excel", "single"})
@@ -136,6 +175,22 @@ class UserProfile:
     last_action: str | None = None
     # None یعنی شماره نگرفته‌ایم یا ستون phone هنوز ساخته نشده است.
     phone: str | None = None
+    # نام و کد ملی ثبت‌نام. None یعنی آن مرحله هنوز انجام نشده یا ستون نیست.
+    # این دو با first_name پروفایل بله یکی نیستند و upsert آن‌ها را عوض نمی‌کند.
+    full_name: str | None = None
+    national_id: str | None = None
+
+
+@dataclass(frozen=True)
+class Deposit:
+    """یک سپردهٔ مهر. is_active یعنی همین شبا مبدأ فایل‌های انتقال است."""
+
+    id: int
+    user_id: int
+    sheba: str
+    label: str | None
+    is_active: bool
+    created_at: str
 
 
 class UserStore(Protocol):
@@ -306,6 +361,8 @@ class MemoryUserStore:
     def __init__(self) -> None:
         self.by_id: dict[int, UserProfile] = {}
         self.events: list[MemoryEvent] = []
+        self.deposits: dict[int, list[Deposit]] = {}
+        self._next_deposit_id = 1
 
     async def touch(self, profile: UserProfile) -> None:
         current = self.by_id.get(profile.user_id)
@@ -320,6 +377,8 @@ class MemoryUserStore:
             message_count=current.message_count + 1,
             last_action=current.last_action,
             phone=current.phone,
+            full_name=current.full_name,
+            national_id=current.national_id,
         )
 
     async def get(self, user_id: int) -> UserProfile | None:
@@ -342,6 +401,81 @@ class MemoryUserStore:
             return
         # last_action عمداً در replace نیست تا موضوع خوش‌آمد سر جایش بماند.
         self.by_id[user_id] = replace(current, phone=canonical)
+
+    async def set_full_name(self, user_id: int, full_name: str) -> bool:
+        """نام قانونی را می‌نویسد. کاربر غایب False است تا گفتگو فکر نکند ذخیره شده."""
+        cleaned = " ".join(full_name.split())
+        if not cleaned:
+            return False
+        current = self.by_id.get(user_id)
+        if current is None:
+            return False
+        self.by_id[user_id] = replace(current, full_name=cleaned[:80])
+        return True
+
+    async def set_national_id(self, user_id: int, national_id: str) -> bool:
+        current = self.by_id.get(user_id)
+        if current is None or not national_id:
+            return False
+        self.by_id[user_id] = replace(current, national_id=national_id)
+        return True
+
+    async def list_deposits(self, user_id: int) -> list[Deposit]:
+        return list(self.deposits.get(user_id, []))
+
+    async def add_deposit(
+        self,
+        user_id: int,
+        sheba: str,
+        label: str | None,
+        created_at: str,
+    ) -> Deposit | None:
+        """سپردهٔ مهر را اضافه می‌کند. شبای غیرمهر، تکراری، یا بیش از سقف یعنی None."""
+        if user_id not in self.by_id or not is_mehr_sheba(sheba):
+            return None
+        normalized = validate_sheba(sheba).normalized
+        owned = self.deposits.setdefault(user_id, [])
+        if any(item.sheba == normalized for item in owned) or len(owned) >= MAX_DEPOSITS:
+            return None
+        deposit = Deposit(
+            id=self._next_deposit_id,
+            user_id=user_id,
+            sheba=normalized,
+            label=_deposit_label(label),
+            is_active=not owned,
+            created_at=created_at,
+        )
+        self._next_deposit_id += 1
+        owned.append(deposit)
+        return deposit
+
+    async def set_active_deposit(self, user_id: int, deposit_id: int) -> Deposit | None:
+        owned = self.deposits.get(user_id, [])
+        chosen = next((item for item in owned if item.id == deposit_id), None)
+        if chosen is None:
+            return None
+        updated: list[Deposit] = []
+        active: Deposit | None = None
+        for item in owned:
+            row = replace(item, is_active=item.id == deposit_id)
+            updated.append(row)
+            if row.is_active:
+                active = row
+        self.deposits[user_id] = updated
+        return active
+
+    async def delete_deposit(self, user_id: int, deposit_id: int) -> bool:
+        owned = self.deposits.get(user_id, [])
+        removed = next((item for item in owned if item.id == deposit_id), None)
+        if removed is None:
+            return False
+        remaining = [item for item in owned if item.id != deposit_id]
+        if removed.is_active and remaining:
+            # بالاترین شناسه مبدأ بعدی است تا دو مبدأ هم‌زمان نماند و فهرست بی‌مبدأ نشود.
+            promote = max(item.id for item in remaining)
+            remaining = [replace(item, is_active=item.id == promote) for item in remaining]
+        self.deposits[user_id] = remaining
+        return True
 
     async def record_event(
         self,
@@ -456,6 +590,28 @@ def _profile_from_row(row: dict) -> UserProfile | None:
         message_count=_coerce_count(row.get("message_count")),
         last_action=_known_action(row.get("last_action")),
         phone=_optional_text(row.get("phone"), 20),
+        full_name=_optional_text(row.get("full_name"), 80),
+        national_id=_optional_text(row.get("national_id"), 10),
+    )
+
+
+def _deposit_label(value: object) -> str | None:
+    return _optional_text(value, 40)
+
+
+def _deposit_from_row(row: dict) -> Deposit | None:
+    user_id = _coerce_user_id(row.get("user_id"))
+    deposit_id = _coerce_count(row.get("id"))
+    sheba = _optional_text(row.get("sheba"), 32)
+    if user_id is None or deposit_id <= 0 or not sheba:
+        return None
+    return Deposit(
+        id=deposit_id,
+        user_id=user_id,
+        sheba=sheba,
+        label=_deposit_label(row.get("label")),
+        is_active=_as_bool_flag(row.get("is_active")),
+        created_at=str(row.get("created_at") or ""),
     )
 
 
@@ -487,7 +643,7 @@ class D1UserStore:
         # اول ستون‌های تازه‌تر. اگر مهاجرت نرفته باشد SQLite خطا می‌دهد و شکل قبلی را می‌خوانیم.
         # خطای شبکه هم به شکل بعدی می‌رسد؛ اگر هر سه شکست بخورند همان خطا را بالا می‌دهیم
         # تا گفتگو آن را ببلعد و خوش‌آمد عمومی بماند.
-        queries = (GET_USER_SQL, GET_USER_SQL_NO_PHONE, GET_USER_SQL_LEGACY)
+        queries = (GET_USER_SQL_FULL, GET_USER_SQL, GET_USER_SQL_NO_PHONE, GET_USER_SQL_LEGACY)
         last_error: Exception | None = None
         for sql in queries:
             try:
@@ -515,6 +671,86 @@ class D1UserStore:
         # last_action در این UPDATE نیست تا موضوع خوش‌آمد سر جایش بماند.
         statement = self.db.prepare(SET_PHONE_SQL).bind(canonical, int(user_id))  # type: ignore[attr-defined]
         await statement.run()
+
+    async def set_full_name(self, user_id: int, full_name: str) -> bool:
+        cleaned = " ".join(full_name.split())
+        if not cleaned:
+            return False
+        statement = self.db.prepare(SET_FULL_NAME_SQL).bind(cleaned[:80], int(user_id))  # type: ignore[attr-defined]
+        await statement.run()
+        return True
+
+    async def set_national_id(self, user_id: int, national_id: str) -> bool:
+        if not national_id:
+            return False
+        statement = self.db.prepare(SET_NATIONAL_ID_SQL).bind(national_id, int(user_id))  # type: ignore[attr-defined]
+        await statement.run()
+        return True
+
+    async def list_deposits(self, user_id: int) -> list[Deposit]:
+        rows = await self._query(LIST_DEPOSITS_SQL, int(user_id))
+        found: list[Deposit] = []
+        for row in rows:
+            deposit = _deposit_from_row(row)
+            if deposit is not None:
+                found.append(deposit)
+        return found
+
+    async def add_deposit(
+        self,
+        user_id: int,
+        sheba: str,
+        label: str | None,
+        created_at: str,
+    ) -> Deposit | None:
+        """اول فهرست را می‌خواند تا تکراری و سقف را همین‌جا رد کند، بعد درج می‌کند.
+
+        شناسه را از SELECT بعدی برمی‌داریم، نه از last_row_id، چون شکل جواب D1 ثابت نیست.
+        """
+        if not is_mehr_sheba(sheba):
+            return None
+        normalized = validate_sheba(sheba).normalized
+        owned = await self.list_deposits(user_id)
+        if any(item.sheba == normalized for item in owned) or len(owned) >= MAX_DEPOSITS:
+            return None
+        active = 0 if owned else 1
+        statement = self.db.prepare(INSERT_DEPOSIT_SQL).bind(  # type: ignore[attr-defined]
+            int(user_id),
+            normalized,
+            _deposit_label(label),
+            active,
+            created_at,
+        )
+        await statement.run()
+        rows = await self._query(SELECT_DEPOSIT_SQL, int(user_id), normalized)
+        if not rows:
+            return None
+        return _deposit_from_row(rows[0])
+
+    async def set_active_deposit(self, user_id: int, deposit_id: int) -> Deposit | None:
+        owned = await self.list_deposits(user_id)
+        if not any(item.id == deposit_id for item in owned):
+            return None
+        clear = self.db.prepare(CLEAR_ACTIVE_SQL).bind(int(user_id))  # type: ignore[attr-defined]
+        await clear.run()
+        mark = self.db.prepare(SET_ACTIVE_SQL).bind(int(user_id), int(deposit_id))  # type: ignore[attr-defined]
+        await mark.run()
+        refreshed = await self.list_deposits(user_id)
+        return next((item for item in refreshed if item.id == deposit_id), None)
+
+    async def delete_deposit(self, user_id: int, deposit_id: int) -> bool:
+        owned = await self.list_deposits(user_id)
+        removed = next((item for item in owned if item.id == deposit_id), None)
+        if removed is None:
+            return False
+        statement = self.db.prepare(DELETE_DEPOSIT_SQL).bind(int(user_id), int(deposit_id))  # type: ignore[attr-defined]
+        await statement.run()
+        if removed.is_active:
+            remaining = [item for item in owned if item.id != deposit_id]
+            if remaining:
+                promote = max(item.id for item in remaining)
+                await self.set_active_deposit(user_id, promote)
+        return True
 
     async def record_event(
         self,

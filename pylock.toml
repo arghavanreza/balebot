@@ -3,6 +3,11 @@ created-by = "uv"
 requires-python = ">=3.14.2"
 
 [[packages]]
+name = "arabic-reshaper"
+version = "3.0.1"
+wheels = [{ url = "https://files.pythonhosted.org/packages/6e/7d/77752d819ede528c664ecf4de974b17b049e054a14537b74b53c8568014f/arabic_reshaper-3.0.1-py3-none-any.whl", upload-time = "2026-04-28T13:53:15.894Z", size = 20699, hashes = { sha256 = "41c5adc2420f85758eada7e880251c4b6a2adbd83377bd27e5d4eba71f648bc7" } }]
+
+[[packages]]
 name = "et-xmlfile"
 version = "2.0.0"
 wheels = [{ url = "https://files.pythonhosted.org/packages/c1/8b/5fe2cc11fee489817272089c4203e679c63b570a5aaeb18d852ae3cbba6a/et_xmlfile-2.0.0-py3-none-any.whl", upload-time = 2024-10-25T17:25:39Z, size = 18059, hashes = { sha256 = "7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa" } }]
@@ -19,6 +24,16 @@ wheels = [
 name = "idna"
 version = "3.20"
 wheels = [{ url = "https://files.pythonhosted.org/packages/58/a2/bb081bab032533a855d44de1d56f8e8426114ff1ba5d1f07a438a0a654f8/idna-3.20-py3-none-any.whl", upload-time = 2026-09-17T14:11:03Z, size = 69583, hashes = { sha256 = "ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c" } }]
+
+[[packages]]
+name = "python-bidi"
+version = "0.4.2"
+wheels = [{ url = "https://files.pythonhosted.org/packages/33/b0/f942d146a2f457233baaafd6bdf624eba8e0f665045b4abd69d1b62d097d/python_bidi-0.4.2-py2.py3-none-any.whl", upload-time = "2019-07-04T10:54:21.189Z", size = 30812, hashes = { sha256 = "50eef6f6a0bbdd685f9e8c207f3c9050f5b578d0a46e37c76a9c4baea2cc2e13" } }]
+
+[[packages]]
+name = "six"
+version = "1.17.0"
+wheels = [{ url = "https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl", upload-time = "2024-12-04T17:35:26.475Z", size = 11050, hashes = { sha256 = "4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274" } }]
 
 [[packages]]
 name = "openpyxl"

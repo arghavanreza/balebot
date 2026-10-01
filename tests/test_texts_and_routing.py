@@ -123,7 +123,14 @@ def test_plain_defaults_upgrade_to_emoji_copy_and_custom_text_stays():
 
 
 def test_admin_key_list_fits_in_one_message():
-    assert len(format_key_list(DEFAULT_TEXTS)) < 3500
+    from bot import format_key_pages
+
+    pages = format_key_pages(DEFAULT_TEXTS)
+    assert pages
+    assert all(len(page) < 3500 for page in pages)
+    joined = format_key_list(DEFAULT_TEXTS)
+    assert "welcome" in joined
+    assert "btn_deposits" in joined
 
 
 def test_state_ttl_and_dedupe():

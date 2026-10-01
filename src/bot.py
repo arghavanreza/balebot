@@ -17,7 +17,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from ccti import CctiConfigError, build_ccti, resolve_debtor
+from ccti import CctiConfigError, Debtor, build_ccti, resolve_debtor
+from deposits import (
+    delete_keyboard,
+    deposits_keyboard,
+    parse_deposit_callback,
+    split_sheba_and_label,
+)
+from national_id import normalize_national_id, parse_full_name
+from pdf_declaration import build_declaration_pdf, declaration_lines, read_font_from_disk
 from excel_convert import ExcelConvertError, TransferBatch, parse_workbook
 from faq import (
     MAX_ANSWER_LENGTH,
@@ -45,18 +53,23 @@ from texts import (
     TextRepository,
     render,
 )
+from sheba import is_mehr_sheba
 from transfer import (
     TransferRow,
     TransferValidationError,
+    any_needs_docs,
     format_channel_companion,
     parse_destination,
+    rows_by_channel,
     validate_beneficiary_name,
     validate_single,
 )
 from users import (
+    MAX_DEPOSITS,
     RECENT_USER_LIMIT,
     USERS_DB_UNAVAILABLE,
     USERS_LIST_FAILED,
+    Deposit,
     UserProfile,
     UserStore,
     bale_user_from_update,
@@ -97,6 +110,8 @@ class BotContext:
     debtor_name: str = ""
     debtor_iban: str = ""
     debtor_bic: str = ""
+    # None یعنی فونت فرم از روی دیسک خوانده شود. ورکر این را به دارایی ASSETS وصل می‌کند.
+    load_font: Callable[[], Awaitable[bytes]] | None = None
 
 
 def norm(text: str) -> str:
@@ -134,13 +149,14 @@ def clip(text: str, limit: int) -> str:
 
 
 def user_keyboard(texts: dict[str, str]) -> dict:
-    """کیبورد مشتری: نمونه، انتقال تکی، انتقال گروهی، شبا و پرسش‌ها.
+    """کیبورد مشتری: سپرده، نمونه، انتقال تکی، انتقال گروهی، شبا و پرسش‌ها.
 
     هر برچسب یک ردیف است چون «ارسال لیست انتقال وجه» در ردیف مشترک جا نمی‌شود.
     خود آن دکمه داخل مرحلهٔ گروهی است؛ از منوی اصلی با «انتقال وجه گروهی» به آن می‌رسیم.
     """
     return {
         "keyboard": [
+            [texts["btn_deposits"]],
             [texts["btn_sample"]],
             [texts["btn_single"]],
             [texts["btn_group"]],
@@ -156,6 +172,7 @@ def admin_keyboard(texts: dict[str, str]) -> dict:
         "keyboard": [
             [texts["btn_edit"]],
             [texts["btn_faq_edit"]],
+            [texts["btn_deposits"]],
             [texts["btn_sample"]],
             [texts["btn_single"]],
             [texts["btn_group"]],
@@ -225,6 +242,7 @@ def match_button(text: str, texts: dict[str, str]) -> str | None:
     """اگر متن دقیقاً برچسب یکی از دکمه‌ها باشد نام داخلی آن دکمه را برمی‌گرداند."""
     folded = norm(text)
     pairs = (
+        ("deposits", texts["btn_deposits"]),
         ("sample", texts["btn_sample"]),
         ("single", texts["btn_single"]),
         ("group", texts["btn_group"]),
@@ -256,12 +274,27 @@ def resolve_text_key(text: str) -> str | None:
     return None
 
 
-def format_key_list(texts: dict[str, str]) -> str:
-    """فهرستی که مدیر می‌بیند تا بداند کدام متن را عوض کند."""
-    lines = [texts["admin_pick_prompt"], ""]
+def format_key_pages(texts: dict[str, str], limit: int = 3200) -> list[str]:
+    """فهرست کلیدها را چند پیام می‌کند تا از سقف ارسال بله رد نشود."""
+    header = texts["admin_pick_prompt"]
+    pages: list[str] = []
+    current = header
     for index, key in enumerate(TEXT_KEYS, start=1):
-        lines.append(f"{index}. {key} — {KEY_HELP[key]}")
-    return "\n".join(lines)
+        line = f"{index}. {key} — {KEY_HELP[key]}"
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > limit and current:
+            pages.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        pages.append(current)
+    return pages or [header]
+
+
+def format_key_list(texts: dict[str, str]) -> str:
+    """همان فهرست، چسبیده. ارسال واقعی از format_key_pages استفاده می‌کند."""
+    return "\n\n".join(format_key_pages(texts))
 
 
 def _topic_label(action: str | None, texts: dict[str, str]) -> str | None:
@@ -475,48 +508,91 @@ async def _record_event(
         print("event record failed:", type(exc).__name__)
 
 
-async def _phone_required(ctx: BotContext, user_id: str, is_admin: bool) -> bool:
-    """مشتری بدون شمارهٔ ذخیره‌شده باید اول موبایل بدهد.
+async def _registration_step(ctx: BotContext, user_id: str, is_admin: bool) -> str | None:
+    """مرحلهٔ ناتمام ثبت‌نام را برمی‌گرداند: phone، سپس name، سپس nid.
 
-    مدیر از این در رد می‌شود تا پنل بدون شماره هم باز بماند.
-    اگر پایگاه نباشد یا set_phone نداشته باشیم، در را نمی‌بندیم: شماره جایی
-    برای ماندن ندارد و قطع بودن D1 نباید کل بازو را قفل کند.
-    خطای خواندن پرونده هم None است و در را نمی‌بندد، همان‌طور که خوش‌آمد عمومی می‌ماند.
-    شمارهٔ ذخیره‌شده فقط وقتی کافی است که نرمال‌سازی موبایل ایران را رد کند.
+    مدیر از هر سه رد می‌شود. اگر پایگاه نباشد یا متد ذخیره نباشد، همان مرحله باز نمی‌ماند
+    تا قطع بودن D1 کل بازو را قفل نکند. خطای خواندن پرونده هم در را نمی‌بندد.
     """
     if is_admin or ctx.users is None:
-        return False
+        return None
     if not callable(getattr(ctx.users, "set_phone", None)):
-        return False
+        return None
     profile = await _load_profile(ctx, user_id)
     if profile is None:
-        return False
-    return normalize_phone(profile.phone) is None
+        return None
+    if normalize_phone(profile.phone) is None:
+        return "phone"
+    if callable(getattr(ctx.users, "set_full_name", None)) and not (profile.full_name or "").strip():
+        return "name"
+    if callable(getattr(ctx.users, "set_national_id", None)) and not (profile.national_id or "").strip():
+        return "nid"
+    return None
 
 
-async def _require_phone(
+def _registration_markup(step: str, texts: dict[str, str]) -> dict:
+    """کیبورد همان مرحله. بعد از شماره، دکمهٔ خدمات نیست تا نام و کد ملی تایپ شود."""
+    if step == "phone":
+        return phone_keyboard(texts)
+    return {"remove_keyboard": True}
+
+
+def _registration_reminder(step: str, texts: dict[str, str]) -> str:
+    if step == "name":
+        return texts["name_prompt"]
+    if step == "nid":
+        return texts["nid_prompt"]
+    return texts.get("phone_required") or texts["phone_prompt"]
+
+
+async def _hold_registration(
     ctx: BotContext,
     texts: dict[str, str],
     reply: Callable[..., Awaitable[None]],
     user_id: str,
+    step: str,
     *,
     greet: bool,
 ) -> None:
-    """مشتری را پشت در شماره نگه می‌دارد و کیبورد خدمات را نشان نمی‌دهد.
-
-    greet فقط برای /start است: اول همان خوش‌آمد، بعد توضیح شماره.
-    بقیهٔ پیام‌ها یک یادآوری کوتاه می‌گیرند تا هر بار متن بلند تکرار نشود.
-    """
-    await ctx.states.set(user_id, {"flow": "phone"})
+    """مشتری را روی همین مرحله نگه می‌دارد و منوی خدمات را نشان نمی‌دهد."""
+    flow = {"phone": "phone", "name": "reg_name", "nid": "reg_nid"}[step]
+    await ctx.states.set(user_id, {"flow": flow})
+    markup = _registration_markup(step, texts)
     if greet:
         profile = await _load_profile(ctx, user_id)
         greeting = texts["welcome"] if profile is None else _greeting(texts, profile)
-        # راهنمای دکمه‌های خدمات این‌جا نیست؛ آن دکمه‌ها هنوز نشان داده نمی‌شوند.
-        await reply(greeting, phone_keyboard(texts))
-        await reply(texts["phone_prompt"], phone_keyboard(texts))
+        await reply(greeting, markup)
+        prompt = texts["phone_prompt"] if step == "phone" else _registration_reminder(step, texts)
+        await reply(prompt, markup)
         return
-    reminder = texts.get("phone_required") or texts["phone_prompt"]
-    await reply(reminder, phone_keyboard(texts))
+    await reply(_registration_reminder(step, texts), markup)
+
+
+async def _open_menu_after_registration(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+    body: str,
+) -> None:
+    """اگر مرحلهٔ بعدی مانده باشد همان را می‌پرسد. وگرنه منوی خدمات را باز می‌کند."""
+    step = await _registration_step(ctx, user_id, is_admin)
+    if step is not None:
+        await ctx.states.set(user_id, {"flow": {"name": "reg_name", "nid": "reg_nid", "phone": "phone"}[step]})
+        await reply(body, _registration_markup(step, texts))
+        await reply(_registration_reminder(step, texts), _registration_markup(step, texts))
+        return
+    await ctx.states.clear(user_id)
+    if not is_admin:
+        extras = [
+            (texts.get(key) or "").strip()
+            for key in ("welcome_hint", "excel_upload_hint")
+        ]
+        hint = "\n\n".join(part for part in extras if part)
+        if hint:
+            body = body + "\n\n" + hint
+    await reply(body, menu_keyboard(texts, is_admin))
 
 
 async def _save_phone(
@@ -527,7 +603,10 @@ async def _save_phone(
     is_admin: bool,
     raw_phone: str,
 ) -> None:
-    """شمارهٔ معتبر را در D1 می‌نویسد و جریان را می‌بندد. last_action این‌جا عوض نمی‌شود."""
+    """شمارهٔ معتبر را در D1 می‌نویسد. last_action این‌جا عوض نمی‌شود.
+
+    برای مشتری، بعد از شماره نوبت نام است و منوی خدمات هنوز باز نمی‌شود.
+    """
     canonical = normalize_phone(raw_phone)
     markup = menu_keyboard(texts, is_admin)
     if canonical is None:
@@ -543,18 +622,67 @@ async def _save_phone(
         print("phone save failed:", type(exc).__name__)
         await reply(texts["phone_store_failed"], phone_keyboard(texts) if not is_admin else markup)
         return
-    await ctx.states.clear(user_id)
     body = render(texts["phone_saved"], phone=canonical)
-    if not is_admin:
-        # بعد از ثبت، راهنمای منو را همان‌جا می‌گذاریم تا دکمه‌های تازه‌ظاهرشده بی‌توضیح نمانند.
-        extras = [
-            (texts.get(key) or "").strip()
-            for key in ("welcome_hint", "excel_upload_hint")
-        ]
-        hint = "\n\n".join(part for part in extras if part)
-        if hint:
-            body = body + "\n\n" + hint
-    await reply(body, markup)
+    await _open_menu_after_registration(ctx, texts, reply, user_id, is_admin, body)
+
+
+async def _save_full_name(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+    raw_text: str,
+) -> None:
+    """نام و نام خانوادگی یک پیام است. تک‌واژه ذخیره نمی‌شود."""
+    parsed = parse_full_name(raw_text)
+    markup = _registration_markup("name", texts)
+    if parsed is None:
+        await reply(texts["name_invalid"], markup)
+        return
+    setter = getattr(ctx.users, "set_full_name", None)
+    if ctx.users is None or not callable(setter):
+        await reply(texts["name_store_failed"], markup)
+        return
+    try:
+        saved = await setter(int(user_id), parsed)
+    except Exception as exc:
+        print("name save failed:", type(exc).__name__)
+        await reply(texts["name_store_failed"], markup)
+        return
+    if saved is False:
+        await reply(texts["name_store_failed"], markup)
+        return
+    await _open_menu_after_registration(ctx, texts, reply, user_id, is_admin, f"نام شما ثبت شد: {parsed}")
+
+
+async def _save_national_id(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+    raw_text: str,
+) -> None:
+    code = normalize_national_id(raw_text)
+    markup = _registration_markup("nid", texts)
+    if code is None:
+        await reply(texts["nid_invalid"], markup)
+        return
+    setter = getattr(ctx.users, "set_national_id", None)
+    if ctx.users is None or not callable(setter):
+        await reply(texts["nid_store_failed"], markup)
+        return
+    try:
+        saved = await setter(int(user_id), code)
+    except Exception as exc:
+        print("national id save failed:", type(exc).__name__)
+        await reply(texts["nid_store_failed"], markup)
+        return
+    if saved is False:
+        await reply(texts["nid_store_failed"], markup)
+        return
+    await _open_menu_after_registration(ctx, texts, reply, user_id, is_admin, texts["registration_done"])
 
 
 def _contact_phone(contact: dict) -> str | None:
@@ -658,6 +786,10 @@ async def _handle_callback(callback: dict, ctx: BotContext) -> None:
     callback_id = callback.get("id")
     if callback_id is None:
         return
+    deposit_action = parse_deposit_callback(callback.get("data"))
+    if deposit_action is not None:
+        await _handle_deposit_callback(callback, ctx, str(callback_id), deposit_action)
+        return
     parsed = _parse_transfer_callback(callback.get("data"))
     if parsed is None:
         await ctx.client.answer_callback_query(str(callback_id))  # type: ignore[attr-defined]
@@ -696,15 +828,30 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         profile = await _load_profile(ctx, user_id) if personal else None
         await reply(compose_customer_text(texts, profile), user_keyboard(texts))
 
-    # مشتریِ بدون شماره از همین‌جا رد نمی‌شود. مدیر و پایگاهِ قطع این پرچم را False می‌گیرند.
-    needs_phone = await _phone_required(ctx, user_id, is_admin)
+    # مشتری تا پایان ثبت‌نام (موبایل، نام، کد ملی) از خدمات رد نمی‌شود. مدیر این مقدار را None می‌گیرد.
+    step = await _registration_step(ctx, user_id, is_admin)
+    prior = await ctx.states.get(user_id)
 
-    # فایل را قبل از متن بررسی می‌کنیم. ارسال اکسل هر جریان نیمه‌کاره (شبا یا ویرایش) را می‌بندد.
-    # بدون شماره، فایل پردازش نمی‌شود تا واریز حقوق پیش از ثبت موبایل به مدیر نرسد.
+    # فایل را قبل از متن بررسی می‌کنیم. اکسل تازه، جریان نیمه‌کاره را می‌بندد.
+    # مدرک عکس یا PDF فقط وقتی جریان مدارک ساتنا باز است به مدیر می‌رود و اکسل جدید نمی‌شود.
     document = message.get("document")
     if isinstance(document, dict) and document.get("file_id"):
-        if needs_phone:
-            await _require_phone(ctx, texts, reply, user_id, greet=False)
+        if step is not None:
+            await _hold_registration(ctx, texts, reply, user_id, step, greet=False)
+            return
+        doc_name = str(document.get("file_name") or "")
+        doc_mime = str(document.get("mime_type") or "")
+        if prior.get("flow") == "transfer_docs" and not _is_xlsx(doc_name, doc_mime):
+            await _forward_support_file(
+                ctx,
+                texts,
+                reply,
+                user_id=user_id,
+                admin_chat=ctx.admin_id,
+                file_id=str(document.get("file_id")),
+                filename=doc_name or "support.pdf",
+                mime=doc_mime or "application/octet-stream",
+            )
             return
         await ctx.states.clear(user_id)
         await _handle_document(
@@ -716,6 +863,28 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             user=user,
             user_id=user_id,
         )
+        return
+
+    photo = message.get("photo")
+    if isinstance(photo, list) and photo:
+        if step is not None:
+            await _hold_registration(ctx, texts, reply, user_id, step, greet=False)
+            return
+        if prior.get("flow") == "transfer_docs":
+            file_id = _largest_photo_id(photo)
+            if file_id is None:
+                await reply(texts["payroll_docs_failed"], cancel_keyboard(texts))
+                return
+            await _forward_support_file(
+                ctx,
+                texts,
+                reply,
+                user_id=user_id,
+                admin_chat=ctx.admin_id,
+                file_id=file_id,
+                filename="support.jpg",
+                mime="image/jpeg",
+            )
         return
 
     # پیام contact متن ندارد. قبل از رد کردن پیام بی‌متن، شماره را برمی‌داریم.
@@ -733,25 +902,35 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if command == "/start":
         await ctx.states.clear(user_id)
         print(f"start user_id={user_id} admin={is_admin}")
-        if needs_phone:
-            await _require_phone(ctx, texts, reply, user_id, greet=True)
+        if step is not None:
+            await _hold_registration(ctx, texts, reply, user_id, step, greet=True)
             return
         await show_menu(personal=True)
         return
-    if needs_phone:
-        # /id خدمات شعبه نیست؛ شناسه را می‌گوییم ولی کیبورد همان درخواست شماره می‌ماند.
+    if step is not None:
+        # /id خدمات شعبه نیست؛ شناسه را می‌گوییم ولی کیبورد همان مرحله می‌ماند.
         if command == "/id":
             print(f"id user_id={user_id}")
-            await ctx.states.set(user_id, {"flow": "phone"})
-            await reply(render(texts["id_reply"], user_id=user_id), phone_keyboard(texts))
+            await reply(render(texts["id_reply"], user_id=user_id), _registration_markup(step, texts))
             return
-        # شمارهٔ ناقص یا ثابت هم باید «نشناختم» بگیرد، نه یادآوری عمومی.
-        # دکمهٔ نمونه و «سلام» رقم موبایل نیستند؛ یادآوری می‌گیرند و منو باز نمی‌شود.
-        if looks_like_phone_attempt(raw_text):
-            await ctx.states.set(user_id, {"flow": "phone"})
+        # انصراف هیچ مرحله‌ای را رد نمی‌کند.
+        if command == "/cancel" or match_button(raw_text, texts) == "cancel":
+            await _hold_registration(ctx, texts, reply, user_id, step, greet=False)
+            return
+        # این دو دستور خدمات شعبه نیستند. جواب «فقط مدیر» می‌آید و منو باز نمی‌شود.
+        if command in {"/users", "/stats"}:
+            await reply(texts["not_admin"], _registration_markup(step, texts))
+            return
+        if step == "phone" and looks_like_phone_attempt(raw_text):
             await _save_phone(ctx, texts, reply, user_id, is_admin, raw_text)
             return
-        await _require_phone(ctx, texts, reply, user_id, greet=False)
+        if step == "name":
+            await _save_full_name(ctx, texts, reply, user_id, is_admin, raw_text)
+            return
+        if step == "nid":
+            await _save_national_id(ctx, texts, reply, user_id, is_admin, raw_text)
+            return
+        await _hold_registration(ctx, texts, reply, user_id, step, greet=False)
         return
     if command == "/cancel":
         await ctx.states.clear(user_id)
@@ -823,6 +1002,10 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             await reply(texts["cancelled"])
         await show_menu()
         return
+    if action == "deposits":
+        await ctx.states.clear(user_id)
+        await _show_deposits(ctx, texts, reply, user_id)
+        return
     if action == "sample":
         await ctx.states.clear(user_id)
         await _note_action(ctx, user_id, "sample")
@@ -860,7 +1043,9 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             await reply(texts["not_admin"], user_keyboard(texts))
             return
         await ctx.states.set(user_id, {"flow": "edit_pick"})
-        await reply(format_key_list(texts), back_keyboard(texts))
+        pages = format_key_pages(texts)
+        for index, page in enumerate(pages):
+            await reply(page, back_keyboard(texts) if index == len(pages) - 1 else None)
         return
 
     if flow == "edit_pick":
@@ -881,6 +1066,10 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             ),
             cancel_keyboard(texts),
         )
+        return
+
+    if flow == "deposit_add":
+        await _save_deposit_text(raw_text, ctx, texts, reply, user_id)
         return
 
     if flow == "sheba":
@@ -1123,6 +1312,279 @@ def _count_channels(rows: list[TransferRow]) -> dict[str, str]:
     }
 
 
+_CHANNEL_FILES = {
+    "internal": "dakheli.ccti",
+    "paya": "paya.ccti",
+    "satna": "satna.ccti",
+}
+
+
+def _largest_photo_id(photo: list) -> str | None:
+    """بزرگ‌ترین نسخهٔ عکس را برمی‌دارد. بله چند اندازه می‌فرستد و آخری معمولاً اصلی است."""
+    best: str | None = None
+    best_size = -1
+    for item in photo:
+        if not isinstance(item, dict) or not item.get("file_id"):
+            continue
+        size = item.get("file_size")
+        if isinstance(size, bool) or not isinstance(size, (int, float)):
+            size = 0
+        if size >= best_size:
+            best = str(item["file_id"])
+            best_size = int(size)
+    return best
+
+
+def _deposits_available(ctx: BotContext) -> bool:
+    return ctx.users is not None and callable(getattr(ctx.users, "list_deposits", None))
+
+
+async def _list_user_deposits(ctx: BotContext, user_id: str) -> list[Deposit]:
+    if not _deposits_available(ctx):
+        return []
+    try:
+        return await ctx.users.list_deposits(int(user_id))  # type: ignore[attr-defined]
+    except Exception as exc:
+        print("deposit list failed:", type(exc).__name__)
+        return []
+
+
+async def _active_deposit(ctx: BotContext, user_id: str) -> Deposit | None:
+    for deposit in await _list_user_deposits(ctx, user_id):
+        if deposit.is_active:
+            return deposit
+    return None
+
+
+async def _debtor_for_group(
+    ctx: BotContext,
+    texts: dict[str, str],
+    user_id: str,
+    is_admin: bool,
+    profile: UserProfile | None,
+) -> Debtor:
+    """بدهکار واریز گروهی، سپردهٔ مبدأ مشتری است.
+
+    اگر پایگاه سپرده نباشد (یا مدیر هنوز مبدأ نگذاشته باشد) همان شبای تنظیم‌شدهٔ محیط می‌ماند
+    تا بازوی بدون جدول deposits از کار نیفتد. مشتریِ دارای پایگاه بدون مبدأ فایل نمی‌گیرد.
+    """
+    active = await _active_deposit(ctx, user_id)
+    if active is not None:
+        name = ""
+        if profile is not None and profile.full_name:
+            name = profile.full_name
+        elif active.label:
+            name = active.label
+        return resolve_debtor(texts, name=name, iban=active.sheba, bic=ctx.debtor_bic)
+    if not is_admin and _deposits_available(ctx):
+        raise CctiConfigError(texts["deposit_required"])
+    return resolve_debtor(texts, name=ctx.debtor_name, iban=ctx.debtor_iban, bic=ctx.debtor_bic)
+
+
+def _profile_note(
+    texts: dict[str, str],
+    profile: UserProfile | None,
+    active: Deposit | None,
+    phone: str,
+) -> str:
+    full_name = profile.full_name if profile is not None and profile.full_name else "ثبت نشده"
+    national_id = profile.national_id if profile is not None and profile.national_id else "ثبت نشده"
+    return render(
+        texts["payroll_profile"],
+        phone=phone,
+        full_name=full_name,
+        national_id=national_id,
+        deposit=active.sheba if active is not None else "ثبت نشده",
+        label=active.label if active is not None and active.label else "—",
+    )
+
+
+async def _load_declaration_font(ctx: BotContext) -> bytes:
+    if ctx.load_font is not None:
+        return await ctx.load_font()
+    return read_font_from_disk()
+
+
+async def _show_deposits(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    *,
+    prefix: str = "",
+) -> None:
+    """فهرست شیشه‌ای سپرده‌ها. افزودن و حذف کنار هر شبا هستند."""
+    if not _deposits_available(ctx):
+        await reply(texts["deposits_store_failed"], menu_keyboard(texts, False))
+        return
+    try:
+        deposits = await ctx.users.list_deposits(int(user_id))  # type: ignore[attr-defined]
+    except Exception as exc:
+        print("deposit list failed:", type(exc).__name__)
+        await reply(texts["deposits_store_failed"])
+        return
+    intro = texts["deposits_intro"]
+    if not deposits:
+        intro = intro + "\n" + texts["deposits_empty"]
+    if prefix:
+        intro = prefix + "\n\n" + intro
+    markup = deposits_keyboard(
+        deposits,
+        add_label=texts["btn_deposit_add"],
+        delete_label=texts["btn_deposit_delete"],
+    )
+    await reply(intro, markup)
+
+
+async def _save_deposit_text(
+    raw_text: str,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    found = split_sheba_and_label(raw_text)
+    if found is None:
+        await reply(texts["deposits_bad"], cancel_keyboard(texts))
+        return
+    sheba, label = found
+    if not is_mehr_sheba(sheba):
+        await reply(texts["deposits_not_mehr"], cancel_keyboard(texts))
+        return
+    owned = await _list_user_deposits(ctx, user_id)
+    if any(item.sheba == sheba for item in owned):
+        await reply(texts["deposits_duplicate"], cancel_keyboard(texts))
+        return
+    if len(owned) >= MAX_DEPOSITS:
+        await reply(texts["deposits_full"], cancel_keyboard(texts))
+        return
+    adder = getattr(ctx.users, "add_deposit", None)
+    if not callable(adder):
+        await reply(texts["deposits_store_failed"], menu_keyboard(texts, False))
+        return
+    try:
+        created = await adder(int(user_id), sheba, label, ctx.clock())
+    except Exception as exc:
+        print("deposit add failed:", type(exc).__name__)
+        await reply(texts["deposits_store_failed"])
+        return
+    if created is None:
+        await reply(texts["deposits_store_failed"])
+        return
+    await ctx.states.clear(user_id)
+    await _show_deposits(ctx, texts, reply, user_id, prefix=texts["deposits_added"])
+
+
+async def _handle_deposit_callback(
+    callback: dict,
+    ctx: BotContext,
+    callback_id: str,
+    action: tuple[str, int | None],
+) -> None:
+    """کلیک افزودن، حذف یا انتخاب مبدأ. جواب callback همیشه بسته می‌شود."""
+    user = callback.get("from") if isinstance(callback.get("from"), dict) else {}
+    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    user_id = str(user.get("id") or chat.get("id") or "")
+    chat_id = chat.get("id", user.get("id"))
+    texts = await ctx.texts.snapshot()
+    is_admin = _ids_match(user_id, ctx.admin_id)
+
+    async def reply(text: str, reply_markup: dict | None = None) -> None:
+        body = (text or "").strip()
+        if not body or chat_id is None:
+            return
+        await ctx.client.send_message(chat_id, body, reply_markup=reply_markup)  # type: ignore[attr-defined]
+
+    try:
+        if not user_id:
+            return
+        step = await _registration_step(ctx, user_id, is_admin)
+        if step is not None:
+            await _hold_registration(ctx, texts, reply, user_id, step, greet=False)
+            return
+        kind, deposit_id = action
+        if kind == "add":
+            await ctx.states.set(user_id, {"flow": "deposit_add"})
+            await reply(texts["deposits_ask"], cancel_keyboard(texts))
+            return
+        if kind == "del":
+            deposits = await _list_user_deposits(ctx, user_id)
+            if not deposits:
+                await _show_deposits(ctx, texts, reply, user_id)
+                return
+            await reply(
+                texts["deposits_intro"],
+                delete_keyboard(deposits, back_label=texts["btn_back"]),
+            )
+            return
+        if kind == "back":
+            await _show_deposits(ctx, texts, reply, user_id)
+            return
+        if deposit_id is None:
+            return
+        if kind == "use":
+            setter = getattr(ctx.users, "set_active_deposit", None)
+            updated = None
+            if callable(setter):
+                try:
+                    updated = await setter(int(user_id), deposit_id)
+                except Exception as exc:
+                    print("deposit activate failed:", type(exc).__name__)
+                    await reply(texts["deposits_store_failed"])
+                    return
+            prefix = texts["deposits_active"] if updated is not None else texts["deposits_missing"]
+            await _show_deposits(ctx, texts, reply, user_id, prefix=prefix)
+            return
+        if kind == "rm":
+            deleter = getattr(ctx.users, "delete_deposit", None)
+            removed = False
+            if callable(deleter):
+                try:
+                    removed = bool(await deleter(int(user_id), deposit_id))
+                except Exception as exc:
+                    print("deposit delete failed:", type(exc).__name__)
+                    await reply(texts["deposits_store_failed"])
+                    return
+            prefix = texts["deposits_deleted"] if removed else texts["deposits_missing"]
+            await _show_deposits(ctx, texts, reply, user_id, prefix=prefix)
+    finally:
+        await ctx.client.answer_callback_query(callback_id)  # type: ignore[attr-defined]
+
+
+async def _forward_support_file(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    *,
+    user_id: str,
+    admin_chat: str,
+    file_id: str,
+    filename: str,
+    mime: str,
+) -> None:
+    """عکس یا PDF مدارک ساتنا را برای مدیر می‌فرستد و مشتری را در همین مرحله نگه می‌دارد."""
+    admin_id = (admin_chat or "").strip()
+    if not admin_id:
+        await reply(texts["excel_no_admin"], cancel_keyboard(texts))
+        return
+    try:
+        data = await ctx.client.get_file_bytes(file_id)  # type: ignore[attr-defined]
+        await ctx.client.send_document(  # type: ignore[attr-defined]
+            admin_id,
+            filename,
+            data,
+            caption=f"مدارک ساتنا\nشناسه: {user_id}",
+            mime=mime,
+        )
+    except Exception as exc:
+        print("support forward failed:", type(exc).__name__)
+        await reply(texts["payroll_docs_failed"], cancel_keyboard(texts))
+        return
+    await ctx.states.set(user_id, {"flow": "transfer_docs"})
+    await reply(texts["payroll_docs_got"], cancel_keyboard(texts))
+
+
 async def _deliver_transfers(
     ctx: BotContext,
     texts: dict[str, str],
@@ -1136,24 +1598,39 @@ async def _deliver_transfers(
     source_name: str,
     summary_key: str,
     extra_fields: dict[str, str] | None = None,
+    channels: tuple[str, ...] = ("paya",),
+    debtor: Debtor | None = None,
+    profile_note: str | None = None,
+    pdf: bytes | None = None,
+    user_chat: object | None = None,
 ) -> bool:
-    """خلاصه و در صورت نیاز ccti و متن همراه را برای مدیر می‌فرستد.
+    """خلاصه و فایل‌های ccti را برای مدیر می‌فرستد.
 
-    False یعنی فایلی که باید می‌رفت نرسید. خطای تنظیم مبدأ، پیش از هر ارسالی، بالا می‌رود
-    تا نیمهٔ فایل برای مدیر نرود و ارسال دوباره سطر تکراری نسازد.
-    شکست خود پیام خلاصه مانع فایل نمی‌شود.
+    channels پیش‌فرض فقط پایا است تا انتقال تکی مثل قبل بماند.
+    واریز گروهی هر سه کانال را می‌دهد و اگر pdf باشد برای مدیر و مشتری هم می‌رود.
+    False یعنی فایلی که باید می‌رفت نرسید. خطای تنظیم مبدأ، پیش از هر ارسالی، بالا می‌رود.
     """
-    paya = [row for row in rows if row.channel == "paya"]
-    xml: str | None = None
-    if paya:
-        debtor = resolve_debtor(
-            texts,
-            name=ctx.debtor_name,
-            iban=ctx.debtor_iban,
-            bic=ctx.debtor_bic,
+    chosen = debtor or resolve_debtor(
+        texts,
+        name=ctx.debtor_name,
+        iban=ctx.debtor_iban,
+        bic=ctx.debtor_bic,
+    )
+    files: list[tuple[str, str]] = []
+    for index, channel in enumerate(channels):
+        selected = [row for row in rows if row.channel == channel]
+        if not selected:
+            continue
+        xml = build_ccti(
+            rows,
+            chosen,
+            now_iso=ctx.clock(),
+            nonce=_nonce(user_id) + index,
+            channel=channel,
         )
-        xml = build_ccti(paya, debtor, now_iso=ctx.clock(), nonce=_nonce(user_id))
-    if xml is None and not (companion and companion.strip()):
+        filename = ccti_filename(source_name) if channels == ("paya",) else _CHANNEL_FILES[channel]
+        files.append((filename, xml))
+    if not files and not (companion and companion.strip()):
         return False
 
     seen_at = ctx.clock()
@@ -1161,13 +1638,18 @@ async def _deliver_transfers(
     fields.update(_count_channels(rows))
     fields.update(
         {
-            "filename": ccti_filename(source_name) if xml else text_filename(source_name),
-            "chars": str(len(companion or xml or "")),
+            "filename": files[0][0] if files else text_filename(source_name),
+            "chars": str(len(companion or (files[0][1] if files else ""))),
             "user_label": _user_label(user),
         }
     )
     if extra_fields:
         fields.update(extra_fields)
+    if profile_note:
+        try:
+            await ctx.client.send_message(admin_id, clip(profile_note, 3500))  # type: ignore[attr-defined]
+        except Exception as exc:
+            print("profile note failed:", type(exc).__name__)
     summary = render(texts.get(summary_key, ""), **fields).strip()
     if summary:
         try:
@@ -1179,14 +1661,15 @@ async def _deliver_transfers(
     caption = render(texts["excel_admin_caption"], **fields)
     last_markup = admin_keyboard(texts)
     try:
-        if xml is not None:
+        for index, (filename, xml) in enumerate(files):
+            is_last = index == len(files) - 1 and not (companion and companion.strip()) and pdf is None
             await ctx.client.send_document(  # type: ignore[attr-defined]
                 admin_id,
-                ccti_filename(source_name),
+                filename,
                 xml.encode("utf-8"),
                 caption=caption,
                 mime="application/xml",
-                reply_markup=None if companion else last_markup,
+                reply_markup=last_markup if is_last else None,
             )
         if companion and companion.strip():
             await ctx.client.send_document(  # type: ignore[attr-defined]
@@ -1195,8 +1678,25 @@ async def _deliver_transfers(
                 companion.encode("utf-8"),
                 caption=caption,
                 mime="text/plain; charset=utf-8",
+                reply_markup=last_markup if pdf is None else None,
+            )
+        if pdf is not None:
+            await ctx.client.send_document(  # type: ignore[attr-defined]
+                admin_id,
+                "declaration.pdf",
+                pdf,
+                caption=caption,
+                mime="application/pdf",
                 reply_markup=last_markup,
             )
+            if user_chat is not None:
+                await ctx.client.send_document(  # type: ignore[attr-defined]
+                    user_chat,
+                    "declaration.pdf",
+                    pdf,
+                    caption=texts["payroll_sign"],
+                    mime="application/pdf",
+                )
     except Exception as exc:
         print("transfer deliver failed:", type(exc).__name__)
         return False
@@ -1213,10 +1713,10 @@ async def _handle_document(
     user: dict,
     user_id: str,
 ) -> None:
-    """اکسل را می‌سنجد و نتیجه را فقط برای ADMIN_ID می‌فرستد.
+    """اکسل گروهی را می‌سنجد و برای مدیر فایل جداگانهٔ هر کانال را می‌فرستد.
 
-    سطر پایا فایل ccti است. داخلی و ساتنا، و شرح پایا، متن می‌مانند.
-    پیش از فایل یک خلاصه می‌رود. اگر خود خلاصه ارسال نشود، فایل همچنان فرستاده می‌شود.
+    بدهکار، سپردهٔ مبدأ مشتری است. فرم PDF برای مدیر و خود مشتری می‌رود.
+    اگر مبلغی از ۵ میلیارد بیشتر باشد، بعد از فایل‌ها مدارک خواسته می‌شود.
     فایل نامعتبر برای مدیر نمی‌رود.
     """
     name = str(document.get("file_name") or "")
@@ -1261,6 +1761,26 @@ async def _handle_document(
 
     profile = await _load_profile(ctx, user_id)
     try:
+        debtor = await _debtor_for_group(ctx, texts, user_id, is_admin, profile) if batch.rows else None
+    except CctiConfigError as exc:
+        await reply(exc.user_message, markup)
+        return
+    active = await _active_deposit(ctx, user_id)
+    phone = profile.phone if profile is not None and profile.phone else "ثبت نشده"
+    pdf: bytes | None = None
+    if batch.rows:
+        try:
+            font = await _load_declaration_font(ctx)
+            legal_name = profile.full_name if profile is not None and profile.full_name else "—"
+            legal_id = profile.national_id if profile is not None and profile.national_id else "—"
+            pdf = build_declaration_pdf(
+                declaration_lines(legal_name, legal_id, rows_by_channel(batch.rows)),
+                font,
+            )
+        except Exception as exc:
+            print("declaration pdf failed:", type(exc).__name__)
+            pdf = None
+    try:
         delivered = await _deliver_transfers(
             ctx,
             texts,
@@ -1274,6 +1794,11 @@ async def _handle_document(
             else (batch.text or None),
             source_name=name or "upload.xlsx",
             summary_key="excel_admin_summary",
+            channels=("internal", "paya", "satna") if batch.rows else ("paya",),
+            debtor=debtor,
+            profile_note=_profile_note(texts, profile, active, phone) if batch.rows else None,
+            pdf=pdf,
+            user_chat=user_id if pdf is not None else None,
         )
     except CctiConfigError as exc:
         await reply(exc.user_message, markup)
@@ -1284,7 +1809,14 @@ async def _handle_document(
 
     # رویداد را بعد از رسیدن فایل می‌نویسیم تا ارسال ناموفق در آمار امروز نیاید.
     await _record_event(ctx, user_id, "excel")
-    await reply(texts["excel_ack"], markup)
+    ack = texts["excel_ack"]
+    if pdf is not None:
+        ack = ack + "\n\n" + texts["payroll_sign"]
+    if batch.rows and any_needs_docs(batch.rows):
+        await ctx.states.set(user_id, {"flow": "transfer_docs"})
+        await reply(ack + "\n\n" + texts["payroll_docs"], cancel_keyboard(texts))
+        return
+    await reply(ack, markup)
 
 
 async def _faq_items(ctx: BotContext) -> list[FaqItem]:

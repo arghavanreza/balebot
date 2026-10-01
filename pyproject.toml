@@ -1,12 +1,14 @@
 [project]
 name = "bale-excel-bot"
 version = "0.1.0"
-description = "Persian Bale bot on Cloudflare Python Workers: single and group transfers, sample workbook, Sheba check, branch FAQ, editable texts."
+description = "Persian Bale bot on Cloudflare Python Workers: registration, Mehr deposits, group payroll CCTI files, declaration PDF, sample workbook, Sheba check, and branch FAQ."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "arabic-reshaper>=3.0.0",
     "httpx>=0.27",
     "openpyxl>=3.1.5",
+    "python-bidi>=0.4.2,<0.5",
 ]
 
 [dependency-groups]

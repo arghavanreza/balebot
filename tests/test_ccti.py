@@ -147,16 +147,20 @@ def test_mixed_upload_sends_ccti_for_paya_and_text_for_the_rest():
         client = FakeBale(files={"file-1": payload})
         await handle_update(_document(USER, update_id=1), _ctx(client))
         names = [item["filename"] for item in client.documents]
-        assert any(name.endswith(".ccti") for name in names)
+        assert "paya.ccti" in names
+        assert "dakheli.ccti" in names
         assert any(name.endswith(".txt") for name in names)
-        xml = next(item["data"].decode() for item in client.documents if item["filename"].endswith(".ccti"))
+        xml = next(item["data"].decode() for item in client.documents if item["filename"] == "paya.ccti")
+        internal = next(item["data"].decode() for item in client.documents if item["filename"] == "dakheli.ccti")
         text = next(item["data"].decode() for item in client.documents if item["filename"].endswith(".txt"))
         assert OTHER in xml
         assert "1234567890123" not in xml
+        assert "1234567890123" in internal
         assert "شرح پایا" not in xml
         assert "نرگس احمدی" in text
         assert "شرح پایا" in text
-        assert all(str(item["chat_id"]) == ADMIN for item in client.documents)
+        admin_files = [item for item in client.documents if str(item["chat_id"]) == ADMIN]
+        assert any(item["filename"] == "paya.ccti" for item in admin_files)
 
     _run(scenario())
 
@@ -174,14 +178,16 @@ def test_non_mehr_debtor_blocks_the_paya_file():
     _run(scenario())
 
 
-def test_internal_only_excel_does_not_build_ccti():
+def test_internal_only_excel_builds_its_own_ccti():
     async def scenario():
         payload = _xlsx([["نرگس احمدی", "1234567890123", 500000, None]])
         client = FakeBale(files={"file-1": payload})
         await handle_update(_document(USER, update_id=1), _ctx(client))
-        assert len(client.documents) == 1
-        assert client.documents[0]["filename"].endswith(".txt")
-        assert b"CstmrCdtTrfInitn" not in client.documents[0]["data"]
-        assert "داخلی" in client.documents[0]["data"].decode()
+        names = [item["filename"] for item in client.documents]
+        assert "dakheli.ccti" in names
+        xml = next(item["data"] for item in client.documents if item["filename"] == "dakheli.ccti")
+        assert b"CstmrCdtTrfInitn" in xml
+        assert b"1234567890123" in xml
+        assert "paya.ccti" not in names
 
     _run(scenario())

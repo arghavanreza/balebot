@@ -106,3 +106,24 @@ def validate_sheba(raw: str) -> ShebaCheck:
     if not iban_is_valid(normalized):
         return ShebaCheck(valid=False, normalized=normalized, reason="checksum")
     return ShebaCheck(valid=True, normalized=normalized, reason="ok")
+
+
+# کد بانک قرض‌الحسنه مهر ایران داخل شبا. جایگاهش رقم‌های ۵ تا ۷ است
+# (بعد از IR و دو رقم کنترل). شعبهٔ داخل شماره این‌جا مهم نیست.
+MEHR_BANK_CODE = "060"
+
+
+def sheba_bank_code(raw: str) -> str | None:
+    """کد سه رقمی بانک را از شبا برمی‌گرداند. شکل غلط یعنی None، حتی اگر رقم کنترل غلط باشد."""
+    normalized = normalize_sheba(raw)
+    if normalized is None:
+        return None
+    return normalized[4:7]
+
+
+def is_mehr_sheba(raw: str) -> bool:
+    """شبای معتبر بانک مهر است یا نه. شعبه هر چه باشد، فقط کد ۰۶۰ ملاک است."""
+    check = validate_sheba(raw)
+    if not check.valid:
+        return False
+    return check.normalized[4:7] == MEHR_BANK_CODE

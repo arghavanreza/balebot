@@ -100,14 +100,15 @@ def test_start_asks_for_phone_until_one_is_stored():
         assert (await store.get(int(USER))).phone is None
 
         await handle_update(_text(USER, "۰۹۱۲۰۰۰۰۰۰۰", update_id=3), ctx)
-        assert "+989120000000" in client.messages[-1]["text"]
+        assert any("+989120000000" in message["text"] for message in client.messages)
         saved = await store.get(int(USER))
         assert saved.phone == "+989120000000"
         assert saved.last_action is None
 
         await handle_update(_text(USER, "/start", update_id=4), ctx)
         assert "موبایل" not in client.messages[-1]["text"]
-        assert "خوش برگشتی" in client.messages[-1]["text"]
+        assert "نام" in client.messages[-1]["text"]
+        assert any("خوش برگشتی" in message["text"] for message in client.messages)
 
     _run(scenario())
 
@@ -126,7 +127,7 @@ def test_contact_share_stores_own_number_and_rejects_someone_else():
 
         await handle_update(_contact(USER, "09121112233", update_id=3, owner=int(USER)), ctx)
         assert (await store.get(int(USER))).phone == "+989121112233"
-        assert "ثبت شد" in client.messages[-1]["text"]
+        assert any("ثبت شد" in message["text"] for message in client.messages)
 
     _run(scenario())
 
@@ -165,14 +166,19 @@ def test_phone_is_required_before_features_and_cancel_does_not_skip():
         assert "متوجه نشدم" not in client.messages[-1]["text"]
 
         await handle_update(_text(USER, "09121234567", update_id=8), ctx)
-        assert "ثبت شد" in client.messages[-1]["text"]
+        assert any("ثبت شد" in message["text"] for message in client.messages)
+        assert "نام" in client.messages[-1]["text"]
+        assert (await ctx.users.get(int(USER))).phone == "+989121234567"
+
+        await handle_update(_text(USER, "علی رضایی", update_id=9), ctx)
+        await handle_update(_text(USER, "1234567891", update_id=10), ctx)
         opened = _flat_labels(client.messages[-1])
         assert DEFAULT_TEXTS["btn_sample"] in opened
         assert DEFAULT_TEXTS["btn_sheba"] in opened
         assert DEFAULT_TEXTS["btn_faq"] in opened
-        assert (await ctx.users.get(int(USER))).phone == "+989121234567"
+        assert (await ctx.users.get(int(USER))).national_id == "1234567891"
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=9), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=11), ctx)
         assert client.documents[-1]["filename"] == "sample.xlsx"
         assert (await ctx.users.get(int(USER))).last_action == "sample"
 
@@ -204,15 +210,25 @@ def test_excel_summary_includes_stored_phone_and_file_still_goes_to_admin():
         ctx.clock = lambda: "2026-10-01T10:00:00Z"
         await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
         await handle_update(_text(USER, "09121234567", update_id=2), ctx)
+        await handle_update(_text(USER, "علی رضایی", update_id=3), ctx)
+        await handle_update(_text(USER, "1234567891", update_id=4), ctx)
+        from sheba import iban_check_digits
 
-        update = _document(USER, update_id=3, username="ali")
+        mehr = "060" + "0" * 19
+        sheba = f"IR{iban_check_digits('IR', mehr)}{mehr}"
+        await store.add_deposit(int(USER), sheba, "حقوق", "2026-10-01T10:00:00Z")
+
+        update = _document(USER, update_id=5, username="ali")
         update["message"]["from"]["last_name"] = "رضایی"
         await handle_update(update, ctx)
 
-        assert len(client.documents) == 1
-        assert str(client.documents[0]["chat_id"]) == ADMIN
-        assert client.documents[0]["filename"].endswith(".ccti")
-        summary = _admin_text(client)
+        ccti_docs = [item for item in client.documents if item["filename"].endswith(".ccti")]
+        assert len(ccti_docs) == 1
+        assert str(ccti_docs[0]["chat_id"]) == ADMIN
+        assert ccti_docs[0]["filename"] == "paya.ccti"
+        summary = "\n".join(
+            message["text"] for message in client.messages if str(message["chat_id"]) == ADMIN
+        )
         assert "شناسه: 7" in summary or f"شناسه: {USER}" in summary
         assert "علی" in summary
         assert "رضایی" in summary
@@ -221,9 +237,12 @@ def test_excel_summary_includes_stored_phone_and_file_still_goes_to_admin():
         assert "2026-10-01 13:30:00" in summary
         assert "تهران" in summary
         assert "پایا: 1" in summary
-        body = client.documents[0]["data"].decode("utf-8")
+        body = ccti_docs[0]["data"].decode("utf-8")
         assert "CstmrCdtTrfInitn" in body
-        assert "+989121234567" in client.documents[0]["caption"]
+        assert sheba in body
+        assert "+989121234567" in ccti_docs[0]["caption"]
+        assert "1234567891" in summary
+        assert "علی رضایی" in summary
         assert any("مدیر" in message["text"] for message in client.messages if str(message["chat_id"]) == USER)
         kinds = [event.kind for event in store.events]
         assert kinds.count("excel") == 1
@@ -236,8 +255,9 @@ def test_excel_file_is_sent_when_summary_message_fails():
         client = _AdminMessageFails(files={"file-1": _xlsx_bytes()})
         ctx = _ctx(client)
         await handle_update(_document(USER, update_id=1, username="ali"), ctx)
-        assert len(client.documents) == 1
-        assert str(client.documents[0]["chat_id"]) == ADMIN
+        ccti_docs = [item for item in client.documents if item["filename"].endswith(".ccti")]
+        assert len(ccti_docs) == 1
+        assert str(ccti_docs[0]["chat_id"]) == ADMIN
         assert any("مدیر" in message["text"] for message in client.messages)
 
     _run(scenario())
@@ -253,16 +273,27 @@ def test_stats_is_admin_only_and_counts_today():
 
         await handle_update(_text(USER, "/start", update_id=1), ctx)
         await handle_update(_text(USER, "09120000000", update_id=2), ctx)
-        await handle_update(_text(USER, "/stats", update_id=3), ctx)
+        await handle_update(_text(USER, "علی رضایی", update_id=3), ctx)
+        await handle_update(_text(USER, "1234567891", update_id=4), ctx)
+        await handle_update(_text(USER, "/stats", update_id=5), ctx)
         assert "فقط برای مدیر" in client.messages[-1]["text"]
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=4), ctx)
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=5), ctx)
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_faq"], update_id=6), ctx)
-        await handle_update(_text(USER, "1", update_id=7), ctx)
-        await handle_update(_document(USER, update_id=8), ctx)
+        from sheba import iban_check_digits
 
-        await handle_update(_text(ADMIN, "/stats", update_id=9), ctx)
+        mehr = "060" + "0" * 19
+        await store.add_deposit(
+            int(USER),
+            f"IR{iban_check_digits('IR', mehr)}{mehr}",
+            None,
+            "2026-10-01T10:00:00Z",
+        )
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=6), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=7), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_faq"], update_id=8), ctx)
+        await handle_update(_text(USER, "1", update_id=9), ctx)
+        await handle_update(_document(USER, update_id=10), ctx)
+
+        await handle_update(_text(ADMIN, "/stats", update_id=11), ctx)
         report = client.messages[-1]["text"]
         assert "آمار امروز" in report
         assert "2026-10-01" in report
@@ -276,7 +307,7 @@ def test_stats_is_admin_only_and_counts_today():
         assert "مدارک افتتاح حساب چیست؟" in report
 
         ctx.users = None
-        await handle_update(_text(ADMIN, "/stats", update_id=10), ctx)
+        await handle_update(_text(ADMIN, "/stats", update_id=12), ctx)
         assert "پایگاه آمار وصل نیست" in client.messages[-1]["text"]
 
     _run(scenario())
