@@ -3,19 +3,22 @@
 ورکر هر آپدیت بله را به handle_update می‌دهد. این فایل به محیط کلادفلر وصل نیست
 تا بشود جریان‌ها را با حافظهٔ ساختگی و کلاینت ساختگی تست کرد.
 
-کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، اعتبارسنجی شبا،
-پرسش‌های متداول شعبه، ویرایش متن، تبدیل فایل اکسل و فرستادن نتیجه فقط برای مدیر،
+کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، انتقال وجه تکی
+با تایید روی دکمهٔ شیشه‌ای، دریافت لیست گروهی، اعتبارسنجی شبا، پرسش‌های متداول،
+ویرایش متن، و فرستادن نتیجه فقط برای مدیر. ایمیل در این نسخه نیست.
 ثبت کاربر در D1، خوش‌آمد با نام اگر پایگاه در دسترس باشد، گرفتن اجباری شمارهٔ
-موبایل پیش از منوی خدمات برای مشتری، و آمار روزانهٔ /stats برای مدیر.
+موبایل پیش از منوی خدمات برای مشتری، و آمار روزانهٔ /stats برای مدیر هم همین‌جاست.
 """
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from excel_convert import ExcelConvertError, convert_excel_to_text
+from ccti import CctiConfigError, build_ccti, resolve_debtor
+from excel_convert import ExcelConvertError, TransferBatch, parse_workbook
 from faq import (
     MAX_ANSWER_LENGTH,
     MAX_FAQ_ITEMS,
@@ -41,6 +44,14 @@ from texts import (
     TEXT_KEYS,
     TextRepository,
     render,
+)
+from transfer import (
+    TransferRow,
+    TransferValidationError,
+    format_channel_companion,
+    parse_destination,
+    validate_beneficiary_name,
+    validate_single,
 )
 from users import (
     RECENT_USER_LIMIT,
@@ -75,12 +86,17 @@ class BotContext:
     client: object
     admin_id: str
     load_sample: Callable[[], Awaitable[bytes]]
-    converter: Callable[[bytes], str] = convert_excel_to_text
+    converter: Callable[[bytes], TransferBatch | str] = parse_workbook
     dedupe: UpdateDedupe | None = None
     users: UserStore | None = None
     clock: Callable[[], str] = utc_now_iso
     # پرسش‌ها روی همان KV متن‌ها هستند، ولی سند جدا دارند. None یعنی این بخش خاموش است.
     faq: FaqRepository | None = None
+    # خالی یعنی از متن debtor_* استفاده شود. ورود ورکر این‌ها را از DEBTOR_* پر می‌کند.
+    # شبای مبدأ فقط باید معتبر و کد ۰۶۰ باشد؛ شعبهٔ خاصی این‌جا قید نمی‌شود.
+    debtor_name: str = ""
+    debtor_iban: str = ""
+    debtor_bic: str = ""
 
 
 def norm(text: str) -> str:
@@ -118,13 +134,16 @@ def clip(text: str, limit: int) -> str:
 
 
 def user_keyboard(texts: dict[str, str]) -> dict:
-    """کیبورد مشتری: نمونهٔ فایل حقوق، اعتبارسنجی شبا، پرسش‌های متداول.
+    """کیبورد مشتری: نمونه، انتقال تکی، انتقال گروهی، شبا و پرسش‌ها.
 
-    هر برچسب یک ردیف است چون «نمونه فایل برای واریز حقوق» در ردیف مشترک جا نمی‌شود.
+    هر برچسب یک ردیف است چون «ارسال لیست انتقال وجه» در ردیف مشترک جا نمی‌شود.
+    خود آن دکمه داخل مرحلهٔ گروهی است؛ از منوی اصلی با «انتقال وجه گروهی» به آن می‌رسیم.
     """
     return {
         "keyboard": [
             [texts["btn_sample"]],
+            [texts["btn_single"]],
+            [texts["btn_group"]],
             [texts["btn_sheba"]],
             [texts["btn_faq"]],
         ]
@@ -138,6 +157,8 @@ def admin_keyboard(texts: dict[str, str]) -> dict:
             [texts["btn_edit"]],
             [texts["btn_faq_edit"]],
             [texts["btn_sample"]],
+            [texts["btn_single"]],
+            [texts["btn_group"]],
             [texts["btn_sheba"]],
             [texts["btn_faq"]],
         ]
@@ -149,11 +170,38 @@ def phone_keyboard(texts: dict[str, str]) -> dict:
 
     request_contact فیلد رسمی دکمهٔ کیبورد بله است. با زدنش، خود بله شمارهٔ کاربر را
     به صورت پیام contact می‌فرستد و بازو لازم نیست شماره را از جای دیگری بخواند.
-    دکمه‌های نمونه، شبا و پرسش‌ها این‌جا نیستند و انصراف هم نیست: بدون شماره منو باز نمی‌شود.
+    دکمه‌های نمونه، انتقال، شبا و پرسش‌ها این‌جا نیستند و انصراف هم نیست:
+    بدون شماره منوی خدمات باز نمی‌شود.
     """
     return {
         "keyboard": [
             [{"text": texts["btn_share_phone"], "request_contact": True}],
+        ]
+    }
+
+
+def group_keyboard(texts: dict[str, str]) -> dict:
+    """مرحلهٔ لیست گروهی. آپلود با فرستادن فایل است؛ دکمه فقط همان کار را یادآوری می‌کند."""
+    return {
+        "keyboard": [
+            [texts["btn_group_send"]],
+            [texts["btn_sample"]],
+            [texts["btn_cancel"]],
+        ]
+    }
+
+
+def confirm_inline_keyboard(texts: dict[str, str], token: str) -> dict:
+    """دکمه‌های شیشه‌ای تایید و رد. توکن کوتاه است تا دکمهٔ قدیمی، انتقال تازه را ثبت نکند.
+
+    callback_data باید ASCII و کوتاه باشد. بله همان شکل inline_keyboard تلگرام را می‌گیرد.
+    """
+    return {
+        "inline_keyboard": [
+            [
+                {"text": texts["btn_transfer_ok"], "callback_data": f"xfer:ok:{token}"},
+                {"text": texts["btn_transfer_no"], "callback_data": f"xfer:no:{token}"},
+            ]
         ]
     }
 
@@ -178,6 +226,9 @@ def match_button(text: str, texts: dict[str, str]) -> str | None:
     folded = norm(text)
     pairs = (
         ("sample", texts["btn_sample"]),
+        ("single", texts["btn_single"]),
+        ("group", texts["btn_group"]),
+        ("group_send", texts["btn_group_send"]),
         ("sheba", texts["btn_sheba"]),
         ("faq", texts["btn_faq"]),
         ("faq_edit", texts["btn_faq_edit"]),
@@ -220,6 +271,7 @@ def _topic_label(action: str | None, texts: dict[str, str]) -> str | None:
         "sheba": "btn_sheba",
         "faq": "btn_faq",
         "excel": "topic_excel",
+        "single": "btn_single",
     }.get(action or "")
     if not key:
         return None
@@ -300,15 +352,13 @@ def _person_field(user: dict, profile: UserProfile | None, key: str) -> str:
     return "—"
 
 
-def _excel_notice_fields(
+def _sender_fields(
     user: dict,
     user_id: str,
-    filename: str,
-    converted: str,
     seen_at: str,
     profile: UserProfile | None,
 ) -> dict[str, str]:
-    """همهٔ جای‌نگهدارهای خلاصه و توضیح فایل. شماره فقط از D1 می‌آید، نه از حدس."""
+    """شناسه و نام و موبایل فرستنده برای پیام مدیر. شماره فقط از D1 می‌آید، نه از حدس."""
     username = user.get("username") if isinstance(user, dict) else None
     if not (isinstance(username, str) and username.strip()) and profile is not None:
         username = profile.username
@@ -320,15 +370,32 @@ def _excel_notice_fields(
     return {
         "user_label": _user_label(user),
         "user_id": user_id,
-        "filename": filename or "upload.xlsx",
-        "rows": str(_line_count(converted)),
-        "chars": str(len(converted)),
         "timestamp": format_tehran_stamp(seen_at),
         "first_name": _person_field(user, profile, "first_name"),
         "last_name": _person_field(user, profile, "last_name"),
         "username": shown_username,
         "phone": phone,
     }
+
+
+def _excel_notice_fields(
+    user: dict,
+    user_id: str,
+    filename: str,
+    converted: str,
+    seen_at: str,
+    profile: UserProfile | None,
+) -> dict[str, str]:
+    """جای‌نگهدارهای خلاصه و توضیح فایل، به‌علاوهٔ مشخصات فرستنده."""
+    fields = _sender_fields(user, user_id, seen_at, profile)
+    fields.update(
+        {
+            "filename": filename or "upload.xlsx",
+            "rows": str(_line_count(converted)),
+            "chars": str(len(converted)),
+        }
+    )
+    return fields
 
 
 def _ids_match(user_id: object, admin_id: str) -> bool:
@@ -556,16 +623,47 @@ async def handle_update(update: dict, ctx: BotContext) -> None:
         await _handle_message(message, ctx)
 
 
+def _parse_transfer_callback(data: object) -> tuple[str, str] | None:
+    """دادهٔ دکمهٔ شیشه‌ای تایید/رد را به (ok|no, token) تبدیل می‌کند. شکل دیگر یعنی دکمهٔ این جریان نیست."""
+    if not isinstance(data, str):
+        return None
+    parts = data.split(":")
+    if len(parts) != 3 or parts[0] != "xfer" or parts[1] not in {"ok", "no"}:
+        return None
+    token = parts[2].strip()
+    if not token:
+        return None
+    return parts[1], token
+
+
+def _transfer_decision_word(text: str, texts: dict[str, str]) -> str | None:
+    """اگر مشتری به‌جای دکمه، تایید یا رد را تایپ کرده باشد همان تصمیم را برمی‌گرداند.
+
+    همزهٔ روی الف را برمی‌داریم تا «تأیید» و «تایید» یکی شوند. این تا کردن سراسری نیست
+    تا برچسب دکمه‌های دیگر ناخواسته عوض نشود.
+    """
+    folded = norm(text).replace("أ", "ا").replace("إ", "ا").replace("آ", "ا").replace("ئ", "ی")
+    if folded == norm(texts["btn_transfer_ok"]).replace("أ", "ا") or folded == "تایید":
+        return "ok"
+    if folded == norm(texts["btn_transfer_no"]) or folded == "رد":
+        return "no"
+    return None
+
+
 async def _handle_callback(callback: dict, ctx: BotContext) -> None:
     """کلیک دکمهٔ شیشه‌ای را جواب می‌دهد تا نشان «در حال بارگذاری» روی بله بماند.
 
-    خود ثبت کاربر قبل از این تابع انجام شده است. این بازو فعلاً منوی شیشه‌ای ندارد
-    و فقط callback را می‌بندد.
+    تایید و رد انتقال تکی همین‌جا تمام می‌شود. هر callback دیگر فقط بسته می‌شود.
     """
     callback_id = callback.get("id")
     if callback_id is None:
         return
-    await ctx.client.answer_callback_query(str(callback_id))  # type: ignore[attr-defined]
+    parsed = _parse_transfer_callback(callback.get("data"))
+    if parsed is None:
+        await ctx.client.answer_callback_query(str(callback_id))  # type: ignore[attr-defined]
+        return
+    decision, token = parsed
+    await _handle_transfer_callback(callback, ctx, str(callback_id), decision, token)
 
 
 async def _handle_message(message: dict, ctx: BotContext) -> None:
@@ -730,6 +828,17 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         await _note_action(ctx, user_id, "sample")
         await _send_sample(ctx, texts, reply, chat_id, is_admin, user_id)
         return
+    if action == "single":
+        await ctx.states.set(user_id, {"flow": "transfer_name"})
+        await _note_action(ctx, user_id, "single")
+        await reply(texts["transfer_ask_name"], cancel_keyboard(texts))
+        return
+    if action in {"group", "group_send"}:
+        await ctx.states.set(user_id, {"flow": "group"})
+        await _note_action(ctx, user_id, "excel")
+        prompt = texts["group_prompt"] if action == "group" else texts["group_need_file"]
+        await reply(prompt, group_keyboard(texts))
+        return
     if action == "sheba":
         await ctx.states.set(user_id, {"flow": "sheba"})
         await _note_action(ctx, user_id, "sheba")
@@ -776,6 +885,36 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
 
     if flow == "sheba":
         await _handle_sheba(raw_text, ctx, texts, reply, user_id, is_admin)
+        return
+
+    if flow == "transfer_name":
+        await _transfer_got_name(raw_text, ctx, texts, reply, user_id)
+        return
+    if flow == "transfer_account":
+        await _transfer_got_account(raw_text, state, ctx, texts, reply, user_id)
+        return
+    if flow == "transfer_amount":
+        await _transfer_got_amount(raw_text, state, ctx, texts, reply, user_id)
+        return
+    if flow == "transfer_confirm":
+        decision = _transfer_decision_word(raw_text, texts)
+        if decision is None:
+            await reply(texts["transfer_need_choice"])
+            return
+        await _apply_transfer_decision(
+            ctx,
+            texts,
+            reply,
+            user_id=user_id,
+            is_admin=is_admin,
+            user=user,
+            decision=decision,
+            token=str(state.get("token") or ""),
+            callback_id=None,
+        )
+        return
+    if flow == "group":
+        await reply(texts["group_need_file"], group_keyboard(texts))
         return
 
     if flow == "faq_admin":
@@ -946,6 +1085,124 @@ async def _send_sample(
     await _record_event(ctx, user_id, "sample")
 
 
+def _as_batch(value: object) -> TransferBatch:
+    """مبدل قدیمی فقط متن برمی‌گرداند. آن را بسته‌ای بدون سطر حساب می‌کنیم تا همچنان فایل متنی برود."""
+    if isinstance(value, TransferBatch):
+        return value
+    if isinstance(value, str):
+        return TransferBatch(rows=[], text=value, truncated=False)
+    raise ExcelConvertError("converter returned nothing usable")
+
+
+def _nonce(user_id: str) -> int:
+    digits = "".join(char for char in user_id if char.isdigit())
+    if not digits:
+        return 0
+    return int(digits) % 1000
+
+
+def ccti_filename(original: str) -> str:
+    """نام ASCII برای فایل پایا. هدر multipart بله نام فارسی را خراب می‌کند."""
+    stem = text_filename(original)
+    if stem.endswith(".txt"):
+        stem = stem[: -len(".txt")]
+    if not stem or stem == "sheet":
+        return "paya.ccti"
+    return f"{stem}.ccti"
+
+
+def _count_channels(rows: list[TransferRow]) -> dict[str, str]:
+    paya = [row for row in rows if row.channel == "paya"]
+    return {
+        "rows": str(len(rows)),
+        "internal": str(sum(row.channel == "internal" for row in rows)),
+        "paya": str(len(paya)),
+        "satna": str(sum(row.channel == "satna" for row in rows)),
+        "paya_sum": str(sum(row.amount for row in paya)),
+        "paya_file": "دارد" if paya else "ندارد",
+    }
+
+
+async def _deliver_transfers(
+    ctx: BotContext,
+    texts: dict[str, str],
+    *,
+    admin_id: str,
+    user: dict,
+    user_id: str,
+    profile: UserProfile | None,
+    rows: list[TransferRow],
+    companion: str | None,
+    source_name: str,
+    summary_key: str,
+    extra_fields: dict[str, str] | None = None,
+) -> bool:
+    """خلاصه و در صورت نیاز ccti و متن همراه را برای مدیر می‌فرستد.
+
+    False یعنی فایلی که باید می‌رفت نرسید. خطای تنظیم مبدأ، پیش از هر ارسالی، بالا می‌رود
+    تا نیمهٔ فایل برای مدیر نرود و ارسال دوباره سطر تکراری نسازد.
+    شکست خود پیام خلاصه مانع فایل نمی‌شود.
+    """
+    paya = [row for row in rows if row.channel == "paya"]
+    xml: str | None = None
+    if paya:
+        debtor = resolve_debtor(
+            texts,
+            name=ctx.debtor_name,
+            iban=ctx.debtor_iban,
+            bic=ctx.debtor_bic,
+        )
+        xml = build_ccti(paya, debtor, now_iso=ctx.clock(), nonce=_nonce(user_id))
+    if xml is None and not (companion and companion.strip()):
+        return False
+
+    seen_at = ctx.clock()
+    fields = _sender_fields(user, user_id, seen_at, profile)
+    fields.update(_count_channels(rows))
+    fields.update(
+        {
+            "filename": ccti_filename(source_name) if xml else text_filename(source_name),
+            "chars": str(len(companion or xml or "")),
+            "user_label": _user_label(user),
+        }
+    )
+    if extra_fields:
+        fields.update(extra_fields)
+    summary = render(texts.get(summary_key, ""), **fields).strip()
+    if summary:
+        try:
+            # خلاصه کیبورد نمی‌فرستد تا منوی مدیر، اگر وسط ویرایش باشد، جابه‌جا نشود.
+            await ctx.client.send_message(admin_id, clip(summary, 3500))  # type: ignore[attr-defined]
+        except Exception as exc:
+            print("transfer summary failed:", type(exc).__name__)
+
+    caption = render(texts["excel_admin_caption"], **fields)
+    last_markup = admin_keyboard(texts)
+    try:
+        if xml is not None:
+            await ctx.client.send_document(  # type: ignore[attr-defined]
+                admin_id,
+                ccti_filename(source_name),
+                xml.encode("utf-8"),
+                caption=caption,
+                mime="application/xml",
+                reply_markup=None if companion else last_markup,
+            )
+        if companion and companion.strip():
+            await ctx.client.send_document(  # type: ignore[attr-defined]
+                admin_id,
+                text_filename(source_name),
+                companion.encode("utf-8"),
+                caption=caption,
+                mime="text/plain; charset=utf-8",
+                reply_markup=last_markup,
+            )
+    except Exception as exc:
+        print("transfer deliver failed:", type(exc).__name__)
+        return False
+    return True
+
+
 async def _handle_document(
     document: dict,
     ctx: BotContext,
@@ -956,12 +1213,11 @@ async def _handle_document(
     user: dict,
     user_id: str,
 ) -> None:
-    """اکسل را به متن تبدیل می‌کند و فایل متنی را فقط به ADMIN_ID می‌فرستد.
+    """اکسل را می‌سنجد و نتیجه را فقط برای ADMIN_ID می‌فرستد.
 
-    پیش از فایل، یک خلاصهٔ جدا (شناسه، زمان تهران، نام، موبایل، تعداد سطر) هم می‌رود.
-    اگر خود خلاصه ارسال نشود، فایل متنی همچنان فرستاده می‌شود.
-    فرستنده یک تأیید کوتاه می‌گیرد. اگر نوع فایل غلط باشد یا دانلود بشکند،
-    مدیر چیزی دریافت نمی‌کند.
+    سطر پایا فایل ccti است. داخلی و ساتنا، و شرح پایا، متن می‌مانند.
+    پیش از فایل یک خلاصه می‌رود. اگر خود خلاصه ارسال نشود، فایل همچنان فرستاده می‌شود.
+    فایل نامعتبر برای مدیر نمی‌رود.
     """
     name = str(document.get("file_name") or "")
     mime = str(document.get("mime_type") or "")
@@ -985,7 +1241,11 @@ async def _handle_document(
         return
 
     try:
-        converted = ctx.converter(data)
+        batch = _as_batch(ctx.converter(data))
+    except TransferValidationError as exc:
+        # فایل خوانا بوده ولی سطرها رد شده‌اند. مدیر چیزی نمی‌گیرد.
+        await reply(clip(exc.user_message, 3500), markup)
+        return
     except ExcelConvertError:
         await reply(texts["excel_parse_error"], markup)
         return
@@ -999,36 +1259,26 @@ async def _handle_document(
         await reply(texts["excel_no_admin"], markup)
         return
 
-    # متن تبدیل‌شده برای خود فرستنده برنمی‌گردد؛ فقط مدیر فایل .txt را می‌گیرد.
-    # شماره از پروندهٔ D1 است. اگر پایگاه نباشد یا هنوز نپرسیده باشیم، «ثبت نشده» می‌ماند.
     profile = await _load_profile(ctx, user_id)
-    fields = _excel_notice_fields(
-        user,
-        user_id,
-        name or "upload.xlsx",
-        converted,
-        ctx.clock(),
-        profile,
-    )
-    summary = render(texts.get("excel_admin_summary", ""), **fields).strip()
-    if summary:
-        try:
-            # خلاصه کیبورد نمی‌فرستد تا منوی مدیر، اگر وسط ویرایش باشد، جابه‌جا نشود.
-            await ctx.client.send_message(admin_id, clip(summary, 3500))  # type: ignore[attr-defined]
-        except Exception as exc:
-            print("excel summary failed:", type(exc).__name__)
-    caption = render(texts["excel_admin_caption"], **fields)
     try:
-        await ctx.client.send_document(  # type: ignore[attr-defined]
-            admin_id,
-            text_filename(name),
-            converted.encode("utf-8"),
-            caption=caption,
-            mime="text/plain; charset=utf-8",
-            reply_markup=admin_keyboard(texts),
+        delivered = await _deliver_transfers(
+            ctx,
+            texts,
+            admin_id=admin_id,
+            user=user,
+            user_id=user_id,
+            profile=profile,
+            rows=batch.rows,
+            companion=format_channel_companion(batch.rows, truncated=batch.truncated)
+            if batch.rows
+            else (batch.text or None),
+            source_name=name or "upload.xlsx",
+            summary_key="excel_admin_summary",
         )
-    except Exception as exc:
-        print("excel deliver failed:", type(exc).__name__)
+    except CctiConfigError as exc:
+        await reply(exc.user_message, markup)
+        return
+    if not delivered:
         await reply(texts["excel_deliver_failed"], markup)
         return
 
@@ -1236,3 +1486,257 @@ async def _save_faq_answer(
         await reply(render(texts["faq_full"], max=MAX_FAQ_ITEMS), menu_keyboard(texts, is_admin))
         return
     await _show_faq_admin(ctx, texts, reply, user_id, prefix=texts["faq_saved"])
+
+
+async def _transfer_got_name(
+    raw_text: str,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    """نام را نگه می‌دارد و سراغ شبا یا حساب می‌رود. خطا جریان را روی همین مرحله می‌گذارد."""
+    error = validate_beneficiary_name(raw_text)
+    if error:
+        await reply(error, cancel_keyboard(texts))
+        return
+    await ctx.states.set(user_id, {"flow": "transfer_account", "name": " ".join(raw_text.split())})
+    await reply(texts["transfer_ask_account"], cancel_keyboard(texts))
+
+
+async def _transfer_got_account(
+    raw_text: str,
+    state: dict,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    destination, error = parse_destination(raw_text)
+    if error or destination is None:
+        await reply(error or texts["transfer_ask_account"], cancel_keyboard(texts))
+        return
+    name = state.get("name")
+    if not isinstance(name, str) or not name.strip():
+        await ctx.states.set(user_id, {"flow": "transfer_name"})
+        await reply(texts["transfer_ask_name"], cancel_keyboard(texts))
+        return
+    await ctx.states.set(
+        user_id,
+        {"flow": "transfer_amount", "name": name.strip(), "account": destination.normalized},
+    )
+    await reply(texts["transfer_ask_amount"], cancel_keyboard(texts))
+
+
+async def _transfer_got_amount(
+    raw_text: str,
+    state: dict,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+) -> None:
+    """مبلغ را با همان قواعد اکسل می‌سنجد و خلاصه را با دکمهٔ شیشه‌ای نشان می‌دهد."""
+    name = state.get("name")
+    account = state.get("account")
+    if not isinstance(name, str) or not isinstance(account, str):
+        await ctx.states.clear(user_id)
+        await reply(texts["transfer_stale"], cancel_keyboard(texts))
+        return
+    row, error = validate_single(name, account, raw_text)
+    if error or row is None:
+        await reply(error or texts["transfer_ask_amount"], cancel_keyboard(texts))
+        return
+    token = secrets.token_hex(4)
+    await ctx.states.set(
+        user_id,
+        {
+            "flow": "transfer_confirm",
+            "name": row.name,
+            "account": row.account,
+            "amount": str(row.amount),
+            "token": token,
+        },
+    )
+    summary = render(
+        texts["transfer_confirm"],
+        beneficiary=row.name,
+        account=row.account,
+        amount=str(row.amount),
+        channel=row.channel_label,
+    )
+    await reply(summary, confirm_inline_keyboard(texts, token))
+
+
+async def _handle_transfer_callback(
+    callback: dict,
+    ctx: BotContext,
+    callback_id: str,
+    decision: str,
+    token: str,
+) -> None:
+    """کلیک تایید یا رد را به همان تصمیمی می‌رساند که تایپ کردن آن کلمه‌ها می‌رسد."""
+    user = callback.get("from") if isinstance(callback.get("from"), dict) else {}
+    message = callback.get("message") if isinstance(callback.get("message"), dict) else {}
+    chat = message.get("chat") if isinstance(message.get("chat"), dict) else {}
+    user_id = str(user.get("id") or chat.get("id") or "")
+    chat_id = chat.get("id", user.get("id"))
+    answered = False
+
+    async def toast(text: str | None = None) -> None:
+        nonlocal answered
+        if answered:
+            return
+        answered = True
+        await ctx.client.answer_callback_query(callback_id, text)  # type: ignore[attr-defined]
+
+    if not user_id or chat_id is None:
+        await toast()
+        return
+
+    texts = await ctx.texts.snapshot()
+    is_admin = _ids_match(user_id, ctx.admin_id)
+
+    async def reply(text: str, reply_markup: dict | None = None) -> None:
+        body = (text or "").strip()
+        if not body:
+            return
+        await ctx.client.send_message(chat_id, body, reply_markup=reply_markup)  # type: ignore[attr-defined]
+
+    try:
+        await _apply_transfer_decision(
+            ctx,
+            texts,
+            reply,
+            user_id=user_id,
+            is_admin=is_admin,
+            user=user,
+            decision=decision,
+            token=token,
+            callback_id=callback_id,
+            toast=toast,
+        )
+    finally:
+        await toast()
+
+
+async def _apply_transfer_decision(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    *,
+    user_id: str,
+    is_admin: bool,
+    user: dict,
+    decision: str,
+    token: str,
+    callback_id: str | None,
+    toast: Callable[..., Awaitable[None]] | None = None,
+) -> None:
+    """تایید را برای مدیر می‌فرستد و رد را بدون خبر به مدیر می‌بندد.
+
+    توکن باید با وضعیت فعلی یکی باشد. دکمهٔ پیام قبلی، بعد از شروع انتقال تازه، اثر ندارد.
+    وضعیت را پیش از ارسال برمی‌داریم تا دو کلیک پشت‌سرهم دو بار به مدیر نرسد.
+    اگر ارسال بشکند، همان وضعیت را برمی‌گردانیم تا مشتری دوباره تایید کند.
+    """
+
+    async def say(text: str | None = None) -> None:
+        if toast is not None:
+            await toast(text)
+
+    state = await ctx.states.get(user_id)
+    stored_token = str(state.get("token") or "")
+    # توکن خالی یعنی این وضعیت مال تایید نیست، حتی اگر جریان درست مانده باشد.
+    if state.get("flow") != "transfer_confirm" or not stored_token or stored_token != token:
+        await say(texts["transfer_stale"])
+        await reply(texts["transfer_stale"], menu_keyboard(texts, is_admin))
+        return
+
+    if decision == "no":
+        await ctx.states.clear(user_id)
+        await say(texts["transfer_cancelled"])
+        await reply(texts["transfer_cancelled"], menu_keyboard(texts, is_admin))
+        return
+
+    name = state.get("name")
+    account = state.get("account")
+    amount = state.get("amount")
+    if not isinstance(name, str) or not isinstance(account, str) or not isinstance(amount, str):
+        await ctx.states.clear(user_id)
+        await say(texts["transfer_stale"])
+        await reply(texts["transfer_stale"], menu_keyboard(texts, is_admin))
+        return
+
+    row, error = validate_single(name, account, amount)
+    if error or row is None:
+        await ctx.states.clear(user_id)
+        await say(texts["transfer_stale"])
+        await reply(error or texts["transfer_stale"], menu_keyboard(texts, is_admin))
+        return
+
+    admin_id = (ctx.admin_id or "").strip()
+    if not admin_id:
+        await ctx.states.clear(user_id)
+        await say(texts["excel_no_admin"])
+        await reply(texts["excel_no_admin"], menu_keyboard(texts, is_admin))
+        return
+
+    profile = await _load_profile(ctx, user_id)
+    if row.channel == "paya":
+        # ساخت فایل پیش از پاک کردن وضعیت است تا شبای مبدأ خراب، تایید را نسوزاند.
+        try:
+            delivered = await _deliver_transfers(
+                ctx,
+                texts,
+                admin_id=admin_id,
+                user=user,
+                user_id=user_id,
+                profile=profile,
+                rows=[row],
+                companion=format_channel_companion([row], truncated=False),
+                source_name="paya.xlsx",
+                summary_key="transfer_admin",
+                extra_fields={
+                    "beneficiary": row.name,
+                    "account": row.account,
+                    "amount": str(row.amount),
+                    "channel": row.channel_label,
+                    "attachment": "فایل پایا (ccti) پیوست است.",
+                },
+            )
+        except CctiConfigError as exc:
+            await say(exc.user_message)
+            await reply(exc.user_message, menu_keyboard(texts, is_admin))
+            return
+        if not delivered:
+            await say(texts["excel_deliver_failed"])
+            await reply(texts["excel_deliver_failed"], menu_keyboard(texts, is_admin))
+            return
+        await ctx.states.clear(user_id)
+        await say(texts["transfer_ack"])
+        await reply(texts["transfer_ack"], menu_keyboard(texts, is_admin))
+        return
+
+    await ctx.states.clear(user_id)
+    fields = _sender_fields(user, user_id, ctx.clock(), profile)
+    fields.update(
+        {
+            "beneficiary": row.name,
+            "account": row.account,
+            "amount": str(row.amount),
+            "channel": row.channel_label,
+            "attachment": "",
+        }
+    )
+    notice = render(texts["transfer_admin"], **fields).strip()
+    try:
+        await ctx.client.send_message(admin_id, clip(notice, 3500))  # type: ignore[attr-defined]
+    except Exception as exc:
+        print("transfer deliver failed:", type(exc).__name__)
+        await ctx.states.set(user_id, state)
+        await say(texts["excel_deliver_failed"])
+        await reply(texts["excel_deliver_failed"], menu_keyboard(texts, is_admin))
+        return
+
+    await say(texts["transfer_ack"])
+    await reply(texts["transfer_ack"], menu_keyboard(texts, is_admin))

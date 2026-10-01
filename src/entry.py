@@ -131,6 +131,10 @@ async def _build_context(env: object) -> tuple[BotContext, object, bool] | tuple
         users=_user_store(env),
         # پرسش‌ها همان namespace متن‌ها را استفاده می‌کنند تا مدیر بدون استقرار عوضشان کند.
         faq=FaqRepository(kv),
+        # خالی ماندن این‌ها یعنی متن debtor_* (پیش‌فرض نمونه). شعبهٔ شبا مهم نیست، فقط کد ۰۶۰.
+        debtor_name=_env_str(env, "DEBTOR_NAME"),
+        debtor_iban=_env_str(env, "DEBTOR_IBAN"),
+        debtor_bic=_env_str(env, "DEBTOR_BIC"),
     )
     return context, client, dry_run
 

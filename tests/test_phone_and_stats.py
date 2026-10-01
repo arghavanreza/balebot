@@ -211,7 +211,7 @@ def test_excel_summary_includes_stored_phone_and_file_still_goes_to_admin():
 
         assert len(client.documents) == 1
         assert str(client.documents[0]["chat_id"]) == ADMIN
-        assert client.documents[0]["filename"].endswith(".txt")
+        assert client.documents[0]["filename"].endswith(".ccti")
         summary = _admin_text(client)
         assert "شناسه: 7" in summary or f"شناسه: {USER}" in summary
         assert "علی" in summary
@@ -220,7 +220,9 @@ def test_excel_summary_includes_stored_phone_and_file_still_goes_to_admin():
         assert "+989121234567" in summary
         assert "2026-10-01 13:30:00" in summary
         assert "تهران" in summary
-        assert "تعداد سطر خروجی: 2" in summary
+        assert "پایا: 1" in summary
+        body = client.documents[0]["data"].decode("utf-8")
+        assert "CstmrCdtTrfInitn" in body
         assert "+989121234567" in client.documents[0]["caption"]
         assert any("مدیر" in message["text"] for message in client.messages if str(message["chat_id"]) == USER)
         kinds = [event.kind for event in store.events]

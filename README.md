@@ -1,5 +1,5 @@
 # بازوی بله — تبدیل اکسل / Bale Excel bot
-Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer sends an `.xlsx` payroll file; the Worker turns the first sheet into a UTF-8 text file and sends that file to the admin (not back to the customer). The same bot hands out a sample workbook, checks an Iranian Sheba (IBAN), and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
+Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer can download a sample workbook, submit one transfer in a short wizard, or upload an `.xlsx` transfer list. The Worker checks each row, classifies it as internal (Mehr), paya, or satna, and sends the result only to the admin. The same bot checks an Iranian Sheba (IBAN) and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
 
 مستندات API بله: <https://docs.bale.ai/>
 
@@ -9,19 +9,22 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 
 ### این بازو چه می‌کند
 
-- دریافت فایل `.xlsx`، تبدیل شیت اول به متن جداشده با تب، و ارسال همان فایل متنی برای `ADMIN_ID`.
-- دکمهٔ «📄 نمونه فایل برای واریز حقوق»: ارسال `assets/sample.xlsx` برای خود کاربر.
+- دکمهٔ «📄 دریافت نمونه اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر. ستون‌ها: نام ذینفع، کدملی (اختیاری)، شماره شبا / حساب ذینفع، مبلغ به ریال، شناسه واریز (اختیاری)، شرح (اختیاری).
+- دکمهٔ «💸 انتقال وجه تکی»: نام ذینفع، سپس شبا یا حساب، سپس مبلغ. خلاصه با دکمهٔ شیشه‌ای «✅ تایید» / «❌ رد» نشان داده می‌شود. فقط تایید برای مدیر پیام می‌سازد.
+- دکمهٔ «📂 انتقال وجه گروهی» و داخل آن «📤 ارسال لیست انتقال وجه»: مشتری فایل `.xlsx` را می‌فرستد. سطر معتبر به مدیر می‌رود. سطر نامعتبر به مدیر نمی‌رود.
+- کانال از روی مقصد و مبلغ تعیین می‌شود: شبای بانک مهر (`060`، رقم سوم تا پنجم بعد از IR) یا شماره حساب مهر = داخلی؛ شبای بانک دیگر تا ۲ میلیارد ریال = پایا؛ بیشتر از آن تا ۵ میلیارد ریال = ساتنا.
+- سطر پایا برای مدیر فایل `.ccti` است (الگوی `CstmrCdtTrfInitn`، تاریخ شمسی، `PmtMtd` برابر `TRF`، ارز `IRR`). داخلی و ساتنا و شرح پایا متن می‌مانند. شبای مبدأ باید شبا معتبر بانک مهر باشد؛ شعبهٔ داخل شماره مهم نیست. پیش‌فرض موقت همان نمونهٔ بانک است و از منوی متن (`debtor_iban`) یا متغیر `DEBTOR_IBAN` عوض می‌شود.
 - پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید می‌گیرند، و اینکه فایل متنی برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
 - دکمهٔ «🏦 اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
 - دکمهٔ «❓ پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
 - اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها و پرسش‌ها از همان‌جا قابل ویرایش‌اند.
 - `/start` اگر پایگاه کاربران در دسترس باشد، بار اول با نام سلام می‌کند و بار بعد «خوش برگشتی» می‌گوید. اگر D1 نباشد همان خوش‌آمد عمومی است.
-- اگر مشتری هنوز شماره نداده باشد، بازو تا ثبت موبایل قابل استفاده نیست. بعد از خوش‌آمد فقط دکمهٔ `request_contact` بله نشان داده می‌شود (یا تایپ `09…` / `+98…`). دکمه‌های نمونه، شبا و پرسش‌ها، و فایل اکسل، تا ذخیرهٔ شماره در `users.phone` پاسخ خدمات نمی‌گیرند. انصراف این مرحله را رد نمی‌کند. مدیر (`ADMIN_ID`) بدون شماره هم پنل را می‌بیند. اگر شماره از قبل باشد، دوباره پرسیده نمی‌شود.
+- اگر مشتری هنوز شماره نداده باشد، بازو تا ثبت موبایل قابل استفاده نیست. بعد از خوش‌آمد فقط دکمهٔ `request_contact` بله نشان داده می‌شود (یا تایپ `09…` / `+98…`). دکمه‌های نمونه، انتقال، شبا و پرسش‌ها، و فایل اکسل، تا ذخیرهٔ شماره در `users.phone` پاسخ خدمات نمی‌گیرند. انصراف این مرحله را رد نمی‌کند. مدیر (`ADMIN_ID`) بدون شماره هم پنل را می‌بیند. اگر شماره از قبل باشد، دوباره پرسیده نمی‌شود.
 - هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند و با `/stats` آمار امروز به وقت تهران را.
 - با هر فایل اکسل، علاوه بر خود فایل متنی، یک خلاصه برای مدیر می‌رود: شناسه، زمان تهران، نام، نام کاربری، موبایل (اگر ثبت شده باشد) و تعداد سطر.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
-قالب خروجی اکسل عمداً موقت است. نقطهٔ تغییر: تابع `convert_excel_to_text` در `src/excel_convert.py`.
+قالب خروجی اکسل در `convert_excel_to_text` (`src/excel_convert.py`) و قواعد کانال در `src/transfer.py` است. ایمیل در این نسخه نیست؛ هم لیست و هم انتقال تکی فقط به مدیر در بله می‌رسد.
 
 ### پیش‌نیاز
 
@@ -92,7 +95,7 @@ uv run pywrangler deploy
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
 
-مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند.
+مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`، `single`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند. `single` کد تازه است و به مهاجرت جدید نیاز ندارد؛ همان ستون متنی مقدار را نگه می‌دارد.
 
 مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. مشتری تا پر شدن این ستون منوی خدمات را نمی‌بیند؛ اگر ستون هنوز نباشد، ذخیرهٔ شماره خطا می‌دهد و همان مشتری پشت درخواست شماره می‌ماند. مدیر به این ستون وابسته نیست. اگر خود D1 قطع باشد، در شماره بسته نمی‌شود تا بقیهٔ بازو جواب بدهد.
 
@@ -214,7 +217,7 @@ uv run pywrangler secret put ADMIN_ID
 
 شناسه در لاگ ورکر هم هنگام `/start` و `/id` چاپ می‌شود: `uv run pywrangler tail`.
 
-بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد. برای بقیه، تا ثبت شمارهٔ موبایل فقط درخواست مخاطب می‌آید و بعد از آن خوش‌آمد و دکمه‌های کاربر (نمونهٔ حقوق، اعتبارسنجی شبا، پرسش‌های متداول). `/id` حتی پیش از شماره جواب می‌دهد، ولی کیبورد خدمات را باز نمی‌کند.
+بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد. برای بقیه، تا ثبت شمارهٔ موبایل فقط درخواست مخاطب می‌آید و بعد از آن خوش‌آمد و دکمه‌های کاربر (نمونهٔ اکسل، انتقال تکی، انتقال گروهی، اعتبارسنجی شبا، پرسش‌های متداول). `/id` حتی پیش از شماره جواب می‌دهد، ولی کیبورد خدمات را باز نمی‌کند.
 
 ### ۹. ویرایش متن‌ها (مدیر)
 
@@ -396,16 +399,19 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 
 ### What it does
 
-- Accepts an `.xlsx` upload, converts the first sheet to tab-separated UTF-8 text, and sends that text file to `ADMIN_ID` with `sendDocument`. The sender only gets an acknowledgement.
-- Reply-keyboard button «📄 نمونه فایل برای واریز حقوق» sends `assets/sample.xlsx` so customers can see the expected columns (`name`, `amount`, `sheba`).
-- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives a text file.
+- Reply-keyboard button «📄 دریافت نمونه اکسل» sends `assets/sample.xlsx`. Columns: beneficiary name, optional national id, sheba or account, amount in Rials, optional deposit id, optional description.
+- «💸 انتقال وجه تکی» walks through name, destination, and amount, then an inline «✅ تایید» / «❌ رد» keyboard. Only a confirm notifies the admin.
+- «📂 انتقال وجه گروهی» asks for an `.xlsx`. Valid rows go to `ADMIN_ID`; any invalid row rejects the whole file.
+- A Bank Mehr sheba (code `060`, any branch) or an 8–18 digit account (except 16) is internal. Another bank’s sheba up to 2,000,000,000 Rials is paya; above that through 5,000,000,000 is satna.
+- Paya rows become a `.ccti` file (`CstmrCdtTrfInitn`, Jalali timestamps, `TRF`, `IRR`). Internal and satna rows, and paya descriptions, stay in the Persian text. The debtor IBAN must be a valid Mehr sheba (`060`); the branch digits are not checked.
+- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives the result.
 - Reply-keyboard button «🏦 اعتبارسنجی شبا» asks for an Iranian IBAN and answers valid or invalid.
 - Reply-keyboard button «❓ پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
 - When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits customer-facing strings and FAQ entries at runtime (Workers KV, not a redeploy).
 - With D1 available, `/start` greets a first visit by `first_name` and a later visit with «خوش برگشتی», plus the last real action when one is stored. If D1 is down, the generic `welcome` text is used.
-- Until a non-admin has a mobile stored on `users.phone`, the bot does not offer the sample, Sheba, or FAQ keyboard. `/start` shows the greeting plus a Bale `request_contact` button (typed `09…` / `+98…` is accepted too). Other feature attempts, including an `.xlsx` upload, get a short reminder and are not processed. Cancel does not skip the step. `ADMIN_ID` keeps the admin panel with or without a phone. A return visit that already has a phone skips the question. If D1 itself is unavailable, the gate stays open so the rest of the bot can still answer.
+- Until a non-admin has a mobile stored on `users.phone`, the bot does not offer the sample, transfer, Sheba, or FAQ keyboard. `/start` shows the greeting plus a Bale `request_contact` button (typed `09…` / `+98…` is accepted too). Other feature attempts, including an `.xlsx` upload, get a short reminder and are not processed. Cancel does not skip the step. `ADMIN_ID` keeps the admin panel with or without a phone. A return visit that already has a phone skips the question. If D1 itself is unavailable, the gate stays open so the rest of the bot can still answer.
 - Every user who sends a message or callback is upserted into Cloudflare D1. The admin lists recent users with `/users` and today’s Tehran-time counts with `/stats`.
-- An Excel upload still delivers the `.txt` file to the admin, and also a summary message: user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
+- An Excel upload still goes only to the admin: paya rows as a `.ccti` file, other rows as text, plus a summary message with user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
 The Excel mapping is explicitly temporary. Change `convert_excel_to_text(data: bytes) -> str` in `src/excel_convert.py`. There is a TODO in that file.

@@ -11,7 +11,7 @@ wrangler.jsonc با نام DB تعریف شده است. این ماژول دو �
 set_phone، record_event و stats_between را دارند.
 
 ستون last_action (مهاجرت ۰۰۰۲) فقط آخرین کار را نگه می‌دارد: sample، sheba،
-faq یا excel. خالی بودنش یعنی موضوعی برای «خوش برگشتی» ساخته نمی‌شود.
+faq، excel یا single. خالی بودنش یعنی موضوعی برای «خوش برگشتی» ساخته نمی‌شود.
 ستون phone (مهاجرت ۰۰۰۳) شمارهٔ موبایل است و جدا از last_action به‌روز می‌شود
 تا ثبت شماره، موضوع خوش‌آمد را پاک نکند. تهی بودنش برای مدیر مجاز است و ردیف
 می‌تواند پیش از رسیدن شماره ساخته شود. برای مشتری، لایهٔ گفتگو در bot.py تا
@@ -110,7 +110,8 @@ SET_LAST_ACTION_SQL = "UPDATE users SET last_action = ? WHERE user_id = ?"
 SET_PHONE_SQL = "UPDATE users SET phone = ? WHERE user_id = ?"
 
 # کدهای مجاز. هر چیز دیگر در ستون نمی‌نشیند تا خوش‌آمد جملهٔ ناشناس نسازد.
-LAST_ACTIONS = frozenset({"sample", "sheba", "faq", "excel"})
+# single یعنی ویزارد انتقال تکی. excel هم آپلود لیست است و هم ورود به همان مرحله.
+LAST_ACTIONS = frozenset({"sample", "sheba", "faq", "excel", "single"})
 
 
 def utc_now_iso() -> str:
@@ -155,7 +156,7 @@ class UserStore(Protocol):
     async def set_phone(self, user_id: int, phone: str) -> None:
         """شمارهٔ نرمال‌شده را ذخیره می‌کند. last_action را عوض نمی‌کند.
 
-        شماره موضوع منو نیست. جملهٔ خوش‌آمد فقط sample و sheba و faq و excel را می‌شناسد،
+        شماره موضوع منو نیست. جملهٔ خوش‌آمد فقط sample و sheba و faq و excel و single را می‌شناسد،
         پس ثبت موبایل نباید آن موضوع را پاک یا عوض کند.
         """
 
