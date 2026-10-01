@@ -1,0 +1,25 @@
+[project]
+name = "bale-excel-bot"
+version = "0.1.0"
+description = "Persian Bale bot on Cloudflare Python Workers: Excel to text for the admin, sample workbook, Sheba check, editable texts."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "openpyxl>=3.1.5",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "workers-py",
+    "workers-runtime-sdk",
+]
+
+# Application repo, not an installable library.
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

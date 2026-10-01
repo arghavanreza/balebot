@@ -1,0 +1,27 @@
+# Python
+.venv/
+.venv-workers/
+python_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and local env. Never commit real tokens.
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+
+# Cloudflare / Node
+.wrangler/
+node_modules/
+dist/
+
+# OS / editor
+.DS_Store
+*.log
+
+.dev.secrets/

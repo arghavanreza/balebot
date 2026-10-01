@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "bale-excel-bot",
+  "main": "src/entry.py",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["python_workers"],
+  // Static sample workbook. The Worker reads it through the ASSETS binding.
+  // run_worker_first keeps /webhook on the Python handler instead of the asset router.
+  "assets": {
+    "directory": "./assets",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+  // Create the namespace, then replace the placeholder id:
+  //   npx wrangler kv namespace create TEXTS
+  "kv_namespaces": [
+    {
+      "binding": "TEXTS",
+      "id": "171d57b5a1b24db3bdcb0e77b7fb102d"
+    }
+  ],
+  // Optional R2 alternative for sample.xlsx (key: sample.xlsx).
+  // Uncomment after `npx wrangler r2 bucket create bale-bot-files`
+  // and `npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx`.
+  // When FILES is bound, it is preferred over the static asset.
+  // "r2_buckets": [
+  //   {
+  //     "binding": "FILES",
+  //     "bucket_name": "bale-bot-files"
+  //   }
+  // ],
+  // Poll getUpdates every minute. Needed when Cloudflare error 1010 blocks
+  // Bale's webhook User-Agent on *.workers.dev (Browser Integrity Check).
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "observability": {
+    "enabled": true
+  }
+}
