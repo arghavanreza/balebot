@@ -14,11 +14,20 @@ def test_committed_sample_matches_the_default_converter():
     data = SAMPLE.read_bytes()
     assert data == read_sample_from_disk()
     text = convert_excel_to_text(data)
-    lines = text.split("\n")
-    assert lines[0] == "name\tamount\tsheba"
-    assert lines[1].startswith("علی رضایی\t1500000\tIR")
-    assert lines[2].startswith("سارا محمدی\t250000\tIR")
     assert "SHOULD_NOT_APPEAR" not in text
-    for line in lines[1:]:
-        sheba = line.split("\t")[2]
-        assert validate_sheba(sheba).valid
+    assert "سطر معتبر: 4" in text
+    lines = [line for line in text.split("\n") if line and not line.startswith("سطر معتبر") and not line.startswith("ردیف")]
+    channels = []
+    for line in lines:
+        if line.startswith("…"):
+            continue
+        fields = line.split("\t")
+        assert len(fields) >= 8
+        account = fields[3]
+        if account.startswith("IR"):
+            assert validate_sheba(account).valid
+        channels.append(fields[-1])
+    assert channels.count("داخلی") == 2
+    assert "پایا" in channels
+    assert "ساتنا" in channels
+    assert any(line.startswith("علی رضایی") or "\tعلی رضایی\t" in line for line in lines)

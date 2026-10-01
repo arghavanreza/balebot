@@ -30,7 +30,7 @@ def test_customer_menu_has_friendly_labels_and_upload_hint_before_the_file():
 
         client.files = {"file-1": _xlsx_bytes()}
         await handle_update(_document(USER, update_id=2), ctx)
-        assert client.documents[0]["filename"].endswith(".txt")
+        assert client.documents[0]["filename"].endswith(".ccti")
         assert str(client.documents[0]["chat_id"]) == ADMIN
         assert "مدیر" in client.messages[-1]["text"]
 
@@ -122,6 +122,40 @@ def test_deleted_default_stays_hidden_and_new_default_is_merged():
         assert "hours" not in ids
         assert "open-account" in ids
         assert len(DEFAULT_FAQ) == 8
+
+    _run(scenario())
+
+
+def test_unchanged_payroll_faq_upgrades_and_a_custom_answer_stays():
+    async def scenario():
+        kv = MemoryKV()
+        old_answer = (
+            "دکمهٔ «نمونه فایل برای واریز حقوق» را بزنید. "
+            "ستون‌های name (نام)، amount (مبلغ به ریال) و sheba را پر کنید و فایل xlsx را در همین گفتگو بفرستید. "
+            "شما یک پیام تأیید می‌گیرید و متن فایل برای مسئول شعبه ارسال می‌شود."
+        )
+        kv.values["bot_faq"] = json.dumps(
+            {
+                "items": [
+                    {
+                        "id": "payroll-file",
+                        "question": "فایل حقوق را چطور بفرستم؟",
+                        "answer": old_answer,
+                    },
+                    {
+                        "id": "limits",
+                        "question": "سقف شعبه؟",
+                        "answer": "جواب خود شعبه.",
+                    },
+                ],
+                "hidden": [],
+            },
+            ensure_ascii=False,
+        )
+        items = await FaqRepository(kv).list_items()
+        by_id = {item.id: item for item in items}
+        assert "نام ذینفع" in by_id["payroll-file"].answer
+        assert by_id["limits"].answer == "جواب خود شعبه."
 
     _run(scenario())
 

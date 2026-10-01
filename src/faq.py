@@ -85,10 +85,11 @@ DEFAULT_FAQ: tuple[FaqItem, ...] = (
     ),
     FaqItem(
         "payroll-file",
-        "فایل حقوق را چطور بفرستم؟",
-        "دکمهٔ «نمونه فایل برای واریز حقوق» را بزنید. "
-        "ستون‌های name (نام)، amount (مبلغ به ریال) و sheba را پر کنید و فایل xlsx را در همین گفتگو بفرستید. "
-        "شما یک پیام تأیید می‌گیرید و متن فایل برای مسئول شعبه ارسال می‌شود.",
+        "فایل انتقال را چطور بفرستم؟",
+        "دکمهٔ «دریافت نمونه اکسل» را بزنید. "
+        "ستون‌های نام ذینفع، شماره شبا یا حساب، و مبلغ به ریال لازم است. "
+        "کدملی، شناسه واریز و شرح اختیاری است. فایل xlsx را از «انتقال وجه گروهی» بفرستید. "
+        "اگر سطرها معتبر باشند، شما تأیید می‌گیرید و متن برای مسئول شعبه می‌رود.",
     ),
     FaqItem(
         "trace",
@@ -100,10 +101,35 @@ DEFAULT_FAQ: tuple[FaqItem, ...] = (
     FaqItem(
         "limits",
         "سقف انتقال روزانه چقدر است؟",
-        "سقف پایا و ساتنا به نوع حساب و بخشنامهٔ روز بستگی دارد و عدد ثابتی این‌جا نیست "
-        "تا با بخشنامهٔ جدید غلط نشود. برای مبلغ بالاتر از سقف، شعبه مسیر جدا (مثلاً ساتنا) را می‌گوید.",
+        "در این بازو، شبای بانک دیگر تا ۲ میلیارد ریال پایا و از آن بیشتر تا ۵ میلیارد ریال ساتنا حساب می‌شود. "
+        "حساب یا شبای بانک مهر (کد ۰۶۰) داخلی است. "
+        "سقف واقعی شعبه ممکن است طبق بخشنامه کمتر باشد؛ عدد قطعی را شعبه می‌گوید.",
     ),
 )
+
+# اگر پرسش و پاسخ هنوز عین پیش‌فرض نسخهٔ قبل باشد، متن جدید را می‌گذاریم.
+# پاسخی که مدیر خودش نوشته با این جفت‌ها یکی نیست و دست نمی‌خورد.
+_PREVIOUS_FAQ: dict[str, frozenset[tuple[str, str]]] = {
+    "payroll-file": frozenset(
+        {
+            (
+                "فایل حقوق را چطور بفرستم؟",
+                "دکمهٔ «نمونه فایل برای واریز حقوق» را بزنید. "
+                "ستون‌های name (نام)، amount (مبلغ به ریال) و sheba را پر کنید و فایل xlsx را در همین گفتگو بفرستید. "
+                "شما یک پیام تأیید می‌گیرید و متن فایل برای مسئول شعبه ارسال می‌شود.",
+            )
+        }
+    ),
+    "limits": frozenset(
+        {
+            (
+                "سقف انتقال روزانه چقدر است؟",
+                "سقف پایا و ساتنا به نوع حساب و بخشنامهٔ روز بستگی دارد و عدد ثابتی این‌جا نیست "
+                "تا با بخشنامهٔ جدید غلط نشود. برای مبلغ بالاتر از سقف، شعبه مسیر جدا (مثلاً ساتنا) را می‌گوید.",
+            )
+        }
+    ),
+}
 
 _DEFAULT_BY_ID: dict[str, FaqItem] = {item.id: item for item in DEFAULT_FAQ}
 
@@ -270,7 +296,8 @@ class FaqRepository:
 
         items = _parse_items(parsed.get("items"))
         hidden = _parse_hidden(parsed.get("hidden"))
-        changed = _merge_new_defaults(items, hidden)
+        changed = _upgrade_unchanged_defaults(items)
+        changed = _merge_new_defaults(items, hidden) or changed
         if changed and persist:
             await self._write(items, hidden)
         return items, hidden, changed
@@ -326,6 +353,23 @@ def _parse_hidden(raw_hidden: object) -> set[str]:
         if isinstance(value, str) and value.strip():
             hidden.add(value.strip()[:40])
     return hidden
+
+
+def _upgrade_unchanged_defaults(items: list[FaqItem]) -> bool:
+    """پاسخ پیش‌فرض نسخهٔ قبل را با متن فعلی عوض می‌کند. True یعنی سند باید دوباره نوشته شود."""
+    changed = False
+    for index, item in enumerate(items):
+        previous = _PREVIOUS_FAQ.get(item.id)
+        default = _DEFAULT_BY_ID.get(item.id)
+        if not previous or default is None:
+            continue
+        if (item.question, item.answer) not in previous:
+            continue
+        if item.question == default.question and item.answer == default.answer:
+            continue
+        items[index] = default
+        changed = True
+    return changed
 
 
 def _merge_new_defaults(items: list[FaqItem], hidden: set[str]) -> bool:

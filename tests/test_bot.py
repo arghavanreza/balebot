@@ -9,7 +9,7 @@ from io import BytesIO
 from openpyxl import Workbook
 
 from bot import BotContext, handle_update, text_filename
-from excel_convert import convert_excel_to_text
+from excel_convert import parse_workbook
 from faq import FaqRepository
 from state import StateRepository, UpdateDedupe
 from storage import MemoryKV
@@ -77,7 +77,7 @@ def _ctx(client, sample=b"PK-sample", admin_id=ADMIN, converter=None):
         client=client,
         admin_id=admin_id,
         load_sample=load_sample,
-        converter=converter or convert_excel_to_text,
+        converter=converter or parse_workbook,
         faq=FaqRepository(kv),
     )
     return context
@@ -114,8 +114,8 @@ def _document(user_id, file_id="file-1", name="customers.xlsx", size=120, update
 def _xlsx_bytes() -> bytes:
     workbook = Workbook()
     sheet = workbook.active
-    sheet.append(["name", "amount", "sheba"])
-    sheet.append(["علی رضایی", 1500000, VALID_SHEBA])
+    sheet.append(["نام ذینفع", "شماره شبا / حساب ذینفع", "مبلغ"])
+    sheet.append(["علی رضایی", VALID_SHEBA, 1500000])
     other = workbook.create_sheet("ignore-me")
     other.append(["SHOULD_NOT_APPEAR"])
     buffer = BytesIO()
@@ -154,7 +154,7 @@ def test_sample_button_sends_xlsx_to_the_user():
         assert document["chat_id"] == int(USER)
         assert document["filename"] == "sample.xlsx"
         assert document["data"] == b"excel-bytes"
-        assert "name" in document["caption"]
+        assert "ذینفع" in document["caption"]
         assert client.messages == []
 
     _run(scenario())
@@ -187,10 +187,13 @@ def test_excel_upload_goes_to_admin_as_text_and_user_is_acknowledged():
         assert len(client.documents) == 1
         sent = client.documents[0]
         assert str(sent["chat_id"]) == ADMIN
-        assert sent["filename"].endswith(".txt")
+        assert sent["filename"].endswith(".ccti")
         body = sent["data"].decode("utf-8")
-        assert body.split("\n")[0] == "name\tamount\tsheba"
+        assert "CstmrCdtTrfInitn" in body
         assert "علی رضایی" in body
+        assert VALID_SHEBA in body
+        assert 'Ccy="IRR"' in body
+        assert ">TRF<" in body
         assert "SHOULD_NOT_APPEAR" not in body
         assert "@ali" in sent["caption"]
         assert USER in sent["caption"]

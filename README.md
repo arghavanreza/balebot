@@ -1,5 +1,5 @@
 # بازوی بله — تبدیل اکسل / Bale Excel bot
-Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer sends an `.xlsx` payroll file; the Worker turns the first sheet into a UTF-8 text file and sends that file to the admin (not back to the customer). The same bot hands out a sample workbook, checks an Iranian Sheba (IBAN), and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
+Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer can download a sample workbook, submit one transfer in a short wizard, or upload an `.xlsx` transfer list. The Worker checks each row, classifies it as internal (Mehr), paya, or satna, and sends the result only to the admin. The same bot checks an Iranian Sheba (IBAN) and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
 
 مستندات API بله: <https://docs.bale.ai/>
 
@@ -9,8 +9,11 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 
 ### این بازو چه می‌کند
 
-- دریافت فایل `.xlsx`، تبدیل شیت اول به متن جداشده با تب، و ارسال همان فایل متنی برای `ADMIN_ID`.
-- دکمهٔ «نمونه فایل برای واریز حقوق»: ارسال `assets/sample.xlsx` برای خود کاربر.
+- دکمهٔ «دریافت نمونه اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر. ستون‌ها: نام ذینفع، کدملی (اختیاری)، شماره شبا / حساب ذینفع، مبلغ به ریال، شناسه واریز (اختیاری)، شرح (اختیاری).
+- دکمهٔ «انتقال وجه تکی»: نام ذینفع، سپس شبا یا حساب، سپس مبلغ. خلاصه با دکمهٔ شیشه‌ای «تایید» / «رد» نشان داده می‌شود. فقط تایید برای مدیر پیام می‌سازد.
+- دکمهٔ «انتقال وجه گروهی» و داخل آن «ارسال لیست انتقال وجه»: مشتری فایل `.xlsx` را می‌فرستد. سطر معتبر به متن (با کانال هر سطر) تبدیل و فقط برای `ADMIN_ID` ارسال می‌شود. سطر نامعتبر به مدیر نمی‌رود.
+- کانال از روی مقصد و مبلغ تعیین می‌شود: شبای بانک مهر (`060`، رقم سوم تا پنجم بعد از IR) یا شماره حساب مهر = داخلی؛ شبای بانک دیگر تا ۲ میلیارد ریال = پایا؛ بیشتر از آن تا ۵ میلیارد ریال = ساتنا.
+- سطر پایا برای مدیر فایل `.ccti` است (الگوی `CstmrCdtTrfInitn`، تاریخ شمسی، `PmtMtd` برابر `TRF`، ارز `IRR`). داخلی و ساتنا و شرح پایا متن می‌مانند. شبای مبدأ باید شبا معتبر بانک مهر باشد؛ شعبهٔ داخل شماره مهم نیست. پیش‌فرض موقت همان نمونهٔ بانک است و از منوی متن (`debtor_iban`) یا متغیر `DEBTOR_IBAN` عوض می‌شود.
 - پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید می‌گیرند، و اینکه فایل متنی برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
 - دکمهٔ «اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
 - دکمهٔ «پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
@@ -21,7 +24,7 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 - با هر فایل اکسل، علاوه بر خود فایل متنی، یک خلاصه برای مدیر می‌رود: شناسه، زمان تهران، نام، نام کاربری، موبایل (اگر ثبت شده باشد) و تعداد سطر.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
-قالب خروجی اکسل عمداً موقت است. نقطهٔ تغییر: تابع `convert_excel_to_text` در `src/excel_convert.py`.
+قالب خروجی اکسل در `convert_excel_to_text` (`src/excel_convert.py`) و قواعد کانال در `src/transfer.py` است. ایمیل در این نسخه نیست؛ هم لیست و هم انتقال تکی فقط به مدیر در بله می‌رسد.
 
 ### پیش‌نیاز
 
@@ -92,7 +95,7 @@ uv run pywrangler deploy
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
 
-مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند.
+مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`، `single`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند. `single` کد تازه است و به مهاجرت جدید نیاز ندارد؛ همان ستون متنی مقدار را نگه می‌دارد.
 
 مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. تا وقتی این ستون نباشد، خوش‌آمد و بقیهٔ بازو کار می‌کنند و فقط ذخیرهٔ شماره خطا می‌دهد.
 

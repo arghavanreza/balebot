@@ -70,7 +70,7 @@ def test_previous_default_labels_upgrade_and_custom_text_stays():
         )
         snap = await TextRepository(kv).snapshot()
         assert snap["welcome"] == "متن خود مدیر"
-        assert snap["btn_sample"] == "نمونه فایل برای واریز حقوق"
+        assert snap["btn_sample"] == "دریافت نمونه اکسل"
         assert snap["btn_sheba"] == "اعتبارسنجی شبا"
         assert "{phone}" in snap["excel_admin_caption"]
         assert "موبایل" in snap["excel_admin_summary"]
