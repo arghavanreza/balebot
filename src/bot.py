@@ -5,8 +5,8 @@
 
 کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، اعتبارسنجی شبا،
 پرسش‌های متداول شعبه، ویرایش متن، تبدیل فایل اکسل و فرستادن نتیجه فقط برای مدیر،
-ثبت کاربر در D1، خوش‌آمد با نام اگر پایگاه در دسترس باشد، گرفتن شمارهٔ موبایل
-بعد از /start، و آمار روزانهٔ /stats برای مدیر.
+ثبت کاربر در D1، خوش‌آمد با نام اگر پایگاه در دسترس باشد، گرفتن اجباری شمارهٔ
+موبایل پیش از منوی خدمات برای مشتری، و آمار روزانهٔ /stats برای مدیر.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from faq import (
     match_faq_item,
     parse_faq_admin_input,
 )
-from phone import normalize_phone
+from phone import looks_like_phone_attempt, normalize_phone
 from sample_loader import XLSX_MIME
 from state import StateRepository, UpdateDedupe
 from stats import STATS_DB_UNAVAILABLE, STATS_FAILED, format_stats, format_tehran_stamp, tehran_day_bounds
@@ -145,18 +145,15 @@ def admin_keyboard(texts: dict[str, str]) -> dict:
 
 
 def phone_keyboard(texts: dict[str, str]) -> dict:
-    """کیبورد درخواست شماره، بعد از خوش‌آمد مشتری.
+    """کیبورد اجباری شماره، تا وقتی موبایل مشتری در پرونده نباشد.
 
     request_contact فیلد رسمی دکمهٔ کیبورد بله است. با زدنش، خود بله شمارهٔ کاربر را
     به صورت پیام contact می‌فرستد و بازو لازم نیست شماره را از جای دیگری بخواند.
-    ردیف‌های منو هم هستند تا بدون دادن شماره بشود نمونه، شبا یا پرسش‌ها را باز کرد.
+    دکمه‌های نمونه، شبا و پرسش‌ها این‌جا نیستند و انصراف هم نیست: بدون شماره منو باز نمی‌شود.
     """
-    menu = user_keyboard(texts)["keyboard"]
     return {
         "keyboard": [
             [{"text": texts["btn_share_phone"], "request_contact": True}],
-            *menu,
-            [texts["btn_cancel"]],
         ]
     }
 
@@ -411,27 +408,48 @@ async def _record_event(
         print("event record failed:", type(exc).__name__)
 
 
-async def _maybe_ask_phone(
+async def _phone_required(ctx: BotContext, user_id: str, is_admin: bool) -> bool:
+    """مشتری بدون شمارهٔ ذخیره‌شده باید اول موبایل بدهد.
+
+    مدیر از این در رد می‌شود تا پنل بدون شماره هم باز بماند.
+    اگر پایگاه نباشد یا set_phone نداشته باشیم، در را نمی‌بندیم: شماره جایی
+    برای ماندن ندارد و قطع بودن D1 نباید کل بازو را قفل کند.
+    خطای خواندن پرونده هم None است و در را نمی‌بندد، همان‌طور که خوش‌آمد عمومی می‌ماند.
+    شمارهٔ ذخیره‌شده فقط وقتی کافی است که نرمال‌سازی موبایل ایران را رد کند.
+    """
+    if is_admin or ctx.users is None:
+        return False
+    if not callable(getattr(ctx.users, "set_phone", None)):
+        return False
+    profile = await _load_profile(ctx, user_id)
+    if profile is None:
+        return False
+    return normalize_phone(profile.phone) is None
+
+
+async def _require_phone(
     ctx: BotContext,
     texts: dict[str, str],
     reply: Callable[..., Awaitable[None]],
     user_id: str,
-    is_admin: bool,
+    *,
+    greet: bool,
 ) -> None:
-    """بعد از خوش‌آمد، اگر شماره در پرونده نباشد آن را می‌پرسد.
+    """مشتری را پشت در شماره نگه می‌دارد و کیبورد خدمات را نشان نمی‌دهد.
 
-    مدیر پرسیده نمی‌شود تا کیبورد پنل با دکمهٔ مخاطب عوض نشود.
-    اگر پایگاه نباشد یا خواندن پرونده خطا بدهد، چیزی پرسیده نمی‌شود.
+    greet فقط برای /start است: اول همان خوش‌آمد، بعد توضیح شماره.
+    بقیهٔ پیام‌ها یک یادآوری کوتاه می‌گیرند تا هر بار متن بلند تکرار نشود.
     """
-    if is_admin or ctx.users is None:
-        return
-    if not callable(getattr(ctx.users, "set_phone", None)):
-        return
-    profile = await _load_profile(ctx, user_id)
-    if profile is None or profile.phone:
-        return
     await ctx.states.set(user_id, {"flow": "phone"})
-    await reply(texts["phone_prompt"], phone_keyboard(texts))
+    if greet:
+        profile = await _load_profile(ctx, user_id)
+        greeting = texts["welcome"] if profile is None else _greeting(texts, profile)
+        # راهنمای دکمه‌های خدمات این‌جا نیست؛ آن دکمه‌ها هنوز نشان داده نمی‌شوند.
+        await reply(greeting, phone_keyboard(texts))
+        await reply(texts["phone_prompt"], phone_keyboard(texts))
+        return
+    reminder = texts.get("phone_required") or texts["phone_prompt"]
+    await reply(reminder, phone_keyboard(texts))
 
 
 async def _save_phone(
@@ -459,7 +477,17 @@ async def _save_phone(
         await reply(texts["phone_store_failed"], phone_keyboard(texts) if not is_admin else markup)
         return
     await ctx.states.clear(user_id)
-    await reply(render(texts["phone_saved"], phone=canonical), markup)
+    body = render(texts["phone_saved"], phone=canonical)
+    if not is_admin:
+        # بعد از ثبت، راهنمای منو را همان‌جا می‌گذاریم تا دکمه‌های تازه‌ظاهرشده بی‌توضیح نمانند.
+        extras = [
+            (texts.get(key) or "").strip()
+            for key in ("welcome_hint", "excel_upload_hint")
+        ]
+        hint = "\n\n".join(part for part in extras if part)
+        if hint:
+            body = body + "\n\n" + hint
+    await reply(body, markup)
 
 
 def _contact_phone(contact: dict) -> str | None:
@@ -570,9 +598,16 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         profile = await _load_profile(ctx, user_id) if personal else None
         await reply(compose_customer_text(texts, profile), user_keyboard(texts))
 
+    # مشتریِ بدون شماره از همین‌جا رد نمی‌شود. مدیر و پایگاهِ قطع این پرچم را False می‌گیرند.
+    needs_phone = await _phone_required(ctx, user_id, is_admin)
+
     # فایل را قبل از متن بررسی می‌کنیم. ارسال اکسل هر جریان نیمه‌کاره (شبا یا ویرایش) را می‌بندد.
+    # بدون شماره، فایل پردازش نمی‌شود تا واریز حقوق پیش از ثبت موبایل به مدیر نرسد.
     document = message.get("document")
     if isinstance(document, dict) and document.get("file_id"):
+        if needs_phone:
+            await _require_phone(ctx, texts, reply, user_id, greet=False)
+            return
         await ctx.states.clear(user_id)
         await _handle_document(
             document,
@@ -586,6 +621,7 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         return
 
     # پیام contact متن ندارد. قبل از رد کردن پیام بی‌متن، شماره را برمی‌داریم.
+    # مخاطب حتی بیرون از جریان phone پذیرفته می‌شود تا دکمهٔ request_contact در را باز کند.
     contact = message.get("contact")
     if isinstance(contact, dict):
         await _handle_contact(contact, ctx, texts, reply, user_id, is_admin)
@@ -599,8 +635,25 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if command == "/start":
         await ctx.states.clear(user_id)
         print(f"start user_id={user_id} admin={is_admin}")
+        if needs_phone:
+            await _require_phone(ctx, texts, reply, user_id, greet=True)
+            return
         await show_menu(personal=True)
-        await _maybe_ask_phone(ctx, texts, reply, user_id, is_admin)
+        return
+    if needs_phone:
+        # /id خدمات شعبه نیست؛ شناسه را می‌گوییم ولی کیبورد همان درخواست شماره می‌ماند.
+        if command == "/id":
+            print(f"id user_id={user_id}")
+            await ctx.states.set(user_id, {"flow": "phone"})
+            await reply(render(texts["id_reply"], user_id=user_id), phone_keyboard(texts))
+            return
+        # شمارهٔ ناقص یا ثابت هم باید «نشناختم» بگیرد، نه یادآوری عمومی.
+        # دکمهٔ نمونه و «سلام» رقم موبایل نیستند؛ یادآوری می‌گیرند و منو باز نمی‌شود.
+        if looks_like_phone_attempt(raw_text):
+            await ctx.states.set(user_id, {"flow": "phone"})
+            await _save_phone(ctx, texts, reply, user_id, is_admin, raw_text)
+            return
+        await _require_phone(ctx, texts, reply, user_id, greet=False)
         return
     if command == "/cancel":
         await ctx.states.clear(user_id)
@@ -668,10 +721,6 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     action = match_button(raw_text, texts)
     if action in {"back", "cancel"}:
         await ctx.states.clear(user_id)
-        if action == "cancel" and flow == "phone":
-            # انصراف از شماره، منوی خوش‌آمد را دوباره تکرار نمی‌کند.
-            await reply(texts["phone_skipped"], menu_keyboard(texts, is_admin))
-            return
         if action == "cancel":
             await reply(texts["cancelled"])
         await show_menu()
@@ -745,10 +794,10 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if await _open_faq_label(raw_text, ctx, texts, reply, user_id):
         return
 
-    # شماره فقط وقتی جریان phone باز است خوانده می‌شود تا متن عادی اشتباهاً ذخیره نشود.
+    # جریان phone اگر هنوز مانده باشد مال نسخه‌ای است که شماره اختیاری بود،
+    # یا ذخیره تمام شده و وضعیت پاک نشده. این‌جا دیگر متن عادی را شماره حساب نمی‌کنیم.
     if flow == "phone":
-        await _save_phone(ctx, texts, reply, user_id, is_admin, raw_text)
-        return
+        await ctx.states.clear(user_id)
 
     # نه دستور بود، نه دکمه، نه فایل. راهنمای کوتاه می‌فرستیم و منو را دوباره نشان می‌دهیم.
     await reply(texts["unknown_text"], menu_keyboard(texts, is_admin))
