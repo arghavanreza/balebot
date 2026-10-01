@@ -184,8 +184,9 @@ def test_excel_upload_goes_to_admin_as_text_and_user_is_acknowledged():
         update = _document(USER, update_id=5, username="ali")
         await handle_update(update, ctx)
 
-        assert len(client.documents) == 1
-        sent = client.documents[0]
+        ccti_docs = [item for item in client.documents if item["filename"].endswith(".ccti")]
+        assert len(ccti_docs) == 1
+        sent = ccti_docs[0]
         assert str(sent["chat_id"]) == ADMIN
         assert sent["filename"].endswith(".ccti")
         body = sent["data"].decode("utf-8")
@@ -243,7 +244,7 @@ def test_admin_can_edit_a_text_and_a_user_sees_it():
         client = FakeBale()
         ctx = _ctx(client)
         await handle_update(_text(ADMIN, DEFAULT_TEXTS["btn_edit"], update_id=1), ctx)
-        assert "welcome" in client.messages[-1]["text"]
+        assert any("welcome" in message["text"] for message in client.messages)
         await handle_update(_text(ADMIN, "welcome", update_id=2), ctx)
         assert "متن جدید" in client.messages[-1]["text"]
         await handle_update(_text(ADMIN, "درود بر شما", update_id=3), ctx)

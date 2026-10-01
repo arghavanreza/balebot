@@ -53,9 +53,11 @@ def test_other_bank_sheba_splits_paya_and_satna_on_the_stated_bounds():
     assert error is None and at_satna is not None
     assert at_satna.channel == "satna"
 
-    _row, error = validate_single("سارا محمدی", OTHER, str(SATNA_MAX_RIAL + 1))
-    assert error is not None
-    assert "سقف" in error
+    above_ceiling, error = validate_single("سارا محمدی", OTHER, str(SATNA_MAX_RIAL + 1))
+    assert error is None and above_ceiling is not None
+    assert above_ceiling.channel == "satna"
+    assert above_ceiling.needs_docs is True
+    assert at_satna.needs_docs is False
 
 
 def test_internal_account_is_not_treated_as_satna():

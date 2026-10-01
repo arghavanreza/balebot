@@ -1,5 +1,5 @@
 # بازوی بله — تبدیل اکسل / Bale Excel bot
-Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer can download a sample workbook, submit one transfer in a short wizard, or upload an `.xlsx` transfer list. The Worker checks each row, classifies it as internal (Mehr), paya, or satna, and sends the result only to the admin. The same bot checks an Iranian Sheba (IBAN) and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
+Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. After registration, a customer stores a Mehr deposit, submits one transfer, or uploads an `.xlsx` list. The Worker classifies each row as internal, Paya, or Satna, sends the admin a separate `.ccti` file per channel plus the customer profile, and sends a declaration PDF to both the customer and the admin. The same bot checks an Iranian Sheba (IBAN) and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
 
 مستندات API بله: <https://docs.bale.ai/>
 
@@ -12,16 +12,18 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 - دکمهٔ «📄 دریافت نمونه اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر. ستون‌ها: نام ذینفع، کدملی (اختیاری)، شماره شبا / حساب ذینفع، مبلغ به ریال، شناسه واریز (اختیاری)، شرح (اختیاری).
 - دکمهٔ «💸 انتقال وجه تکی»: نام ذینفع، سپس شبا یا حساب، سپس مبلغ. خلاصه با دکمهٔ شیشه‌ای «✅ تایید» / «❌ رد» نشان داده می‌شود. فقط تایید برای مدیر پیام می‌سازد.
 - دکمهٔ «📂 انتقال وجه گروهی» و داخل آن «📤 ارسال لیست انتقال وجه»: مشتری فایل `.xlsx` را می‌فرستد. سطر معتبر به مدیر می‌رود. سطر نامعتبر به مدیر نمی‌رود.
-- کانال از روی مقصد و مبلغ تعیین می‌شود: شبای بانک مهر (`060`، رقم سوم تا پنجم بعد از IR) یا شماره حساب مهر = داخلی؛ شبای بانک دیگر تا ۲ میلیارد ریال = پایا؛ بیشتر از آن تا ۵ میلیارد ریال = ساتنا.
-- سطر پایا برای مدیر فایل `.ccti` است (الگوی `CstmrCdtTrfInitn`، تاریخ شمسی، `PmtMtd` برابر `TRF`، ارز `IRR`). داخلی و ساتنا و شرح پایا متن می‌مانند. شبای مبدأ باید شبا معتبر بانک مهر باشد؛ شعبهٔ داخل شماره مهم نیست. پیش‌فرض موقت همان نمونهٔ بانک است و از منوی متن (`debtor_iban`) یا متغیر `DEBTOR_IBAN` عوض می‌شود.
-- پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید می‌گیرند، و اینکه فایل متنی برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
+- کانال از روی مقصد و مبلغ تعیین می‌شود: شبای بانک مهر (`060`، هر شعبه) یا شماره حساب مهر = داخلی؛ شبای بانک دیگر تا ۲ میلیارد ریال = پایا؛ بیشتر از آن = ساتنا. بیشتر از ۵ میلیارد همچنان ساتنا است و بعد از پردازش، عکس یا PDF مدارک خواسته می‌شود.
+- بعد از پردازش گروهی، مدیر برای هر کانالِ دارای سطر یک فایل `.ccti` جدا می‌گیرد (`dakheli.ccti`، `paya.ccti`، `satna.ccti`، همان الگوی `CstmrCdtTrfInitn`). شرح داخل XML نیست. بدهکار، سپردهٔ مبدأ خود مشتری است (شبای مهر `060`). اگر پایگاه سپرده نباشد، شبای موقت `debtor_iban` / `DEBTOR_IBAN` می‌ماند.
+- همان پردازش یک PDF برای مشتری و مدیر می‌سازد: «اینجانب … با کد ملی … درخواست انتقال وجه به این شرح را دارم:»، فهرست ردیف‌ها، و جا برای امضا و تاریخ. به مشتری گفته می‌شود فرم را چاپ کند، امضا کند و به شعبه ببرد.
+- پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید و فرم PDF می‌گیرند، و اینکه فایل‌های ccti برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
 - دکمهٔ «🏦 اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
 - دکمهٔ «❓ پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
 - اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها و پرسش‌ها از همان‌جا قابل ویرایش‌اند.
 - `/start` اگر پایگاه کاربران در دسترس باشد، بار اول با نام سلام می‌کند و بار بعد «خوش برگشتی» می‌گوید. اگر D1 نباشد همان خوش‌آمد عمومی است.
-- اگر مشتری هنوز شماره نداده باشد، بازو تا ثبت موبایل قابل استفاده نیست. بعد از خوش‌آمد فقط دکمهٔ `request_contact` بله نشان داده می‌شود (یا تایپ `09…` / `+98…`). دکمه‌های نمونه، انتقال، شبا و پرسش‌ها، و فایل اکسل، تا ذخیرهٔ شماره در `users.phone` پاسخ خدمات نمی‌گیرند. انصراف این مرحله را رد نمی‌کند. مدیر (`ADMIN_ID`) بدون شماره هم پنل را می‌بیند. اگر شماره از قبل باشد، دوباره پرسیده نمی‌شود.
+- مشتری غیرمدیر پیش از هر خدمت باید ثبت‌نام را به ترتیب تمام کند: ۱) موبایل (دکمهٔ `request_contact` یا تایپ `09…` / `+98…`) ۲) نام و نام خانوادگی در یک پیام ۳) کد ملی ۱۰ رقمی با رقم کنترل. تا پایان این سه، فقط همان پرسش می‌آید و منوی سپرده، انتقال، نمونه، شبا و پرسش‌ها باز نمی‌شود. انصراف هیچ مرحله‌ای را رد نمی‌کند. نام و کد ملی در `full_name` و `national_id` می‌مانند و با نام پروفایل بله عوض نمی‌شوند. مدیر (`ADMIN_ID`) این در را نمی‌بیند.
+- دکمهٔ «💳 سپرده‌های من» کیبورد شیشه‌ای باز می‌کند: هر سپرده با شبا و برچسب، به‌علاوهٔ «افزودن» و «حذف». یکی مبدأ است. افزودن فقط شبای بانک مهر (`060`) را می‌پذیرد.
 - هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند و با `/stats` آمار امروز به وقت تهران را.
-- با هر فایل اکسل، علاوه بر خود فایل متنی، یک خلاصه برای مدیر می‌رود: شناسه، زمان تهران، نام، نام کاربری، موبایل (اگر ثبت شده باشد) و تعداد سطر.
+- با هر واریز گروهی، پروندهٔ مشتری (موبایل، نام، کد ملی، سپردهٔ مبدأ) و فایل‌های `.ccti` برای مدیر می‌رود و فرم PDF هم برای مشتری و هم برای مدیر.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
 قالب خروجی اکسل در `convert_excel_to_text` (`src/excel_convert.py`) و قواعد کانال در `src/transfer.py` است. ایمیل در این نسخه نیست؛ هم لیست و هم انتقال تکی فقط به مدیر در بله می‌رسد.
@@ -100,6 +102,16 @@ npx wrangler d1 migrations apply bale-bot-users --local
 مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. مشتری تا پر شدن این ستون منوی خدمات را نمی‌بیند؛ اگر ستون هنوز نباشد، ذخیرهٔ شماره خطا می‌دهد و همان مشتری پشت درخواست شماره می‌ماند. مدیر به این ستون وابسته نیست. اگر خود D1 قطع باشد، در شماره بسته نمی‌شود تا بقیهٔ بازو جواب بدهد.
 
 مهاجرت `migrations/0004_events.sql` جدول `events` را می‌سازد: `user_id`، `kind` (`excel` / `faq` / `sheba` / `sample`)، `detail` (برای پرسش، متن کوتاه سؤال) و `created_at` به وقت UTC. دستور `/stats` از همین جدول و از `first_seen_at` / `last_seen_at` می‌خواند. اگر جدول نباشد، شمارش کاربران امروز همچنان می‌آید و شمارش رویدادها یک جملهٔ راهنما است.
+
+مهاجرت `migrations/0005_profile.sql` ستون‌های `full_name` و `national_id` را به `users` اضافه می‌کند. اگر این ستون‌ها نباشند، مشتریِ دارای شماره پشت درخواست نام می‌ماند. مدیر به این ستون‌ها وابسته نیست.
+
+مهاجرت `migrations/0006_deposits.sql` جدول `deposits` را می‌سازد (شبا، برچسب اختیاری، پرچم مبدأ). بدون این جدول دکمهٔ «سپرده‌های من» یک جملهٔ راهنمای مهاجرت می‌گوید و مشتری فایل CCTI گروهی نمی‌گیرد.
+
+فرم PDF را خود کد می‌سازد و فونت `assets/fonts/NotoNaskhArabic-Regular.ttf` را داخل فایل می‌گذارد (SIL OFL، متن مجوز در `assets/fonts/OFL.txt`). چسبیدن حروف با `arabic-reshaper` و ترتیب راست‌به‌چپ با `python-bidi` نسخهٔ ۰.۴ است (خالص پایتون، بدون Rust). `pywrangler deploy` این دو را از `pyproject.toml` داخل `python_modules/` می‌گذارد. آن پوشه در `.gitignore` است و نباید commit شود. برای vendor دستی:
+
+```bash
+uv pip install --target python_modules 'arabic-reshaper>=3.0.0' 'python-bidi>=0.4.2,<0.5'
+```
 
 بعد از گرفتن این نسخه، همان دستور مهاجرت را یک بار دیگر بزنید؛ فایل‌های قبلی دوباره اجرا نمی‌شوند.
 
@@ -402,16 +414,18 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 - Reply-keyboard button «📄 دریافت نمونه اکسل» sends `assets/sample.xlsx`. Columns: beneficiary name, optional national id, sheba or account, amount in Rials, optional deposit id, optional description.
 - «💸 انتقال وجه تکی» walks through name, destination, and amount, then an inline «✅ تایید» / «❌ رد» keyboard. Only a confirm notifies the admin.
 - «📂 انتقال وجه گروهی» asks for an `.xlsx`. Valid rows go to `ADMIN_ID`; any invalid row rejects the whole file.
-- A Bank Mehr sheba (code `060`, any branch) or an 8–18 digit account (except 16) is internal. Another bank’s sheba up to 2,000,000,000 Rials is paya; above that through 5,000,000,000 is satna.
-- Paya rows become a `.ccti` file (`CstmrCdtTrfInitn`, Jalali timestamps, `TRF`, `IRR`). Internal and satna rows, and paya descriptions, stay in the Persian text. The debtor IBAN must be a valid Mehr sheba (`060`); the branch digits are not checked.
-- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives the result.
+- A Bank Mehr sheba (code `060`, any branch) or an 8–18 digit account (except 16) is internal. Another bank’s sheba up to 2,000,000,000 Rials inclusive is Paya. Above that is Satna. Above 5,000,000,000 Rials is still Satna, and after the files are sent the bot asks for a photo or PDF.
+- Each channel that has rows becomes its own `.ccti` file (`dakheli.ccti`, `paya.ccti`, `satna.ccti`) using `CstmrCdtTrfInitn`, Jalali timestamps, `TRF`, and `IRR`. Descriptions stay out of the XML. The debtor IBAN is the customer’s active Mehr deposit. If the deposits table is missing, the temporary `debtor_iban` / `DEBTOR_IBAN` value is used instead. An admin with no active deposit uses that same fallback.
+- The same group run builds one PDF for the customer and the admin. It opens with «اینجانب … با کد ملی … درخواست انتقال وجه به این شرح را دارم:», lists every row under its channel, and leaves space for a signature and a date. The customer is told to print it, sign it, and take it to the branch.
+- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement and a PDF, and that the branch admin receives the CCTI files.
 - Reply-keyboard button «🏦 اعتبارسنجی شبا» asks for an Iranian IBAN and answers valid or invalid.
 - Reply-keyboard button «❓ پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
 - When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits customer-facing strings and FAQ entries at runtime (Workers KV, not a redeploy).
 - With D1 available, `/start` greets a first visit by `first_name` and a later visit with «خوش برگشتی», plus the last real action when one is stored. If D1 is down, the generic `welcome` text is used.
-- Until a non-admin has a mobile stored on `users.phone`, the bot does not offer the sample, transfer, Sheba, or FAQ keyboard. `/start` shows the greeting plus a Bale `request_contact` button (typed `09…` / `+98…` is accepted too). Other feature attempts, including an `.xlsx` upload, get a short reminder and are not processed. Cancel does not skip the step. `ADMIN_ID` keeps the admin panel with or without a phone. A return visit that already has a phone skips the question. If D1 itself is unavailable, the gate stays open so the rest of the bot can still answer.
+- A non-admin must finish registration in order: 1) mobile (`request_contact` or typed `09…` / `+98…`) 2) full name in one message 3) a 10-digit Iranian national id with its check digit. Until those three are stored, the bot shows only that step. Deposits, transfers, the sample, Sheba, FAQ, and Excel uploads get a reminder and are not processed. Cancel does not skip a step. `full_name` and `national_id` are separate from the Bale profile name. `ADMIN_ID` keeps the admin panel without registering. If D1 itself is unavailable, the gate stays open so the rest of the bot can still answer.
+- «💳 سپرده‌های من» opens an inline keyboard: each deposit as sheba plus a label when one was typed, and the buttons «افزودن» and «حذف». One deposit is the active debtor. Adding accepts only a Bank Mehr IBAN (bank code `060`, any branch).
 - Every user who sends a message or callback is upserted into Cloudflare D1. The admin lists recent users with `/users` and today’s Tehran-time counts with `/stats`.
-- An Excel upload still goes only to the admin: paya rows as a `.ccti` file, other rows as text, plus a summary message with user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
+- A group transfer sends the admin the customer profile (phone, name, national id, active deposit) and one `.ccti` file per channel that has rows. The declaration PDF goes to both the customer and the admin. A readable text copy still travels with descriptions, because the bank XML has no description field.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
 The Excel mapping is explicitly temporary. Change `convert_excel_to_text(data: bytes) -> str` in `src/excel_convert.py`. There is a TODO in that file.
@@ -486,9 +500,19 @@ npx wrangler d1 migrations apply bale-bot-users --local
 
 `migrations/0003_phone.sql` adds nullable `users.phone`. Stored values look like `+989` plus 10 digits. Customers stay on the phone step until that column can store a number. Admins are not blocked. If D1 itself is down, the phone gate stays open.
 
-`migrations/0004_events.sql` creates `events` (`user_id`, `kind`, `detail`, `created_at` in UTC). Kinds are `excel` (text file delivered to the admin), `faq` (an answer was opened; `detail` is a short question), `sheba` (the check was started), and `sample` (the sample file was sent). `/stats` counts `users.last_seen_at` / `first_seen_at` and these rows inside the Tehran day. If the events table is missing, user counts still return and the event section says to apply the migration.
+`migrations/0004_events.sql` creates `events` (`user_id`, `kind`, `detail`, `created_at` in UTC). Kinds are `excel` (a payroll file was delivered to the admin), `faq` (an answer was opened; `detail` is a short question), `sheba` (the check was started), and `sample` (the sample file was sent). `/stats` counts `users.last_seen_at` / `first_seen_at` and these rows inside the Tehran day. If the events table is missing, user counts still return and the event section says to apply the migration.
+
+`migrations/0005_profile.sql` adds `users.full_name` and `users.national_id`. A customer who already has a phone stays on the name step until those columns can store a value. Admins are not blocked.
+
+`migrations/0006_deposits.sql` creates `deposits` (sheba, optional label, active flag). Without that table, «سپرده‌های من» explains that the migration is missing and a customer group transfer does not build CCTI files.
 
 Re-run `migrations apply` after pulling this version; already-applied files are skipped.
+
+The declaration PDF is written in Python. It embeds `assets/fonts/NotoNaskhArabic-Regular.ttf` (SIL OFL; see `assets/fonts/OFL.txt`). Persian joining uses `arabic-reshaper`; right-to-left order uses `python-bidi` 0.4 (pure Python, no Rust). `pywrangler deploy` installs both into `python_modules/` from `pyproject.toml`. That directory is gitignored and must not be committed. To vendor by hand:
+
+```bash
+uv pip install --target python_modules 'arabic-reshaper>=3.0.0' 'python-bidi>=0.4.2,<0.5'
+```
 
 `/users` is admin-only and lists up to 20 people, most recently seen first. `/stats` is admin-only. “Today” is midnight to next midnight in Asia/Tehran (fixed UTC+03:30, no DST): an active user has `last_seen_at` in that window, a new user has `first_seen_at` in that window, and events use `created_at` with the same bounds. Both commands are commands, not keyboard buttons. The comparison is plain text because the timestamps are fixed-width UTC ISO strings.
 

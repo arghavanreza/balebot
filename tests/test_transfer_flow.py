@@ -70,17 +70,19 @@ def test_single_transfer_confirm_notifies_admin_and_reject_does_not():
         ctx.clock = lambda: "2026-10-01T10:00:00Z"
         await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
         await handle_update(_text(USER, "09121234567", update_id=2), ctx)
+        await handle_update(_text(USER, "مریم کاظمی", update_id=3), ctx)
+        await handle_update(_text(USER, "1234567891", update_id=4), ctx)
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_single"], update_id=3), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_single"], update_id=5), ctx)
         assert "ذینفع" in client.messages[-1]["text"]
-        await handle_update(_text(USER, "علی رضایی", update_id=4), ctx)
-        await handle_update(_text(USER, "نه-این-حساب-نیست", update_id=5), ctx)
+        await handle_update(_text(USER, "علی رضایی", update_id=6), ctx)
+        await handle_update(_text(USER, "نه-این-حساب-نیست", update_id=7), ctx)
         assert "نامعتبر" in client.messages[-1]["text"] or "شبا" in client.messages[-1]["text"]
-        await handle_update(_text(USER, OTHER, update_id=6), ctx)
+        await handle_update(_text(USER, OTHER, update_id=8), ctx)
         assert "مبلغ" in client.messages[-1]["text"]
-        await handle_update(_text(USER, "۰", update_id=7), ctx)
+        await handle_update(_text(USER, "۰", update_id=9), ctx)
         assert "ریال" in client.messages[-1]["text"]
-        await handle_update(_text(USER, "۲۵۰۰۰۰", update_id=8), ctx)
+        await handle_update(_text(USER, "۲۵۰۰۰۰", update_id=10), ctx)
 
         summary = client.messages[-1]
         assert "علی رضایی" in summary["text"]
@@ -93,16 +95,16 @@ def test_single_transfer_confirm_notifies_admin_and_reject_does_not():
         reject_data = buttons[1]["callback_data"]
         confirm_data = buttons[0]["callback_data"]
 
-        await handle_update(_callback(USER, reject_data, 9), ctx)
+        await handle_update(_callback(USER, reject_data, 11), ctx)
         assert "لغو" in client.messages[-1]["text"]
         assert not any(str(message["chat_id"]) == ADMIN for message in client.messages)
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_single"], update_id=10), ctx)
-        await handle_update(_text(USER, "علی رضایی", update_id=11), ctx)
-        await handle_update(_text(USER, OTHER, update_id=12), ctx)
-        await handle_update(_text(USER, "250000", update_id=13), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_single"], update_id=12), ctx)
+        await handle_update(_text(USER, "علی رضایی", update_id=13), ctx)
+        await handle_update(_text(USER, OTHER, update_id=14), ctx)
+        await handle_update(_text(USER, "250000", update_id=15), ctx)
         confirm_data = client.messages[-1]["reply_markup"]["inline_keyboard"][0][0]["callback_data"]
-        await handle_update(_callback(USER, confirm_data, 14), ctx)
+        await handle_update(_callback(USER, confirm_data, 16), ctx)
 
         admin_messages = [message for message in client.messages if str(message["chat_id"]) == ADMIN]
         assert len(admin_messages) == 1
@@ -129,7 +131,7 @@ def test_single_transfer_confirm_notifies_admin_and_reject_does_not():
         assert "EMPTY" in xml
         assert "BMJIIRTHXXX" in xml
 
-        await handle_update(_callback(USER, confirm_data, 15), ctx)
+        await handle_update(_callback(USER, confirm_data, 17), ctx)
         admin_again = [message for message in client.messages if str(message["chat_id"]) == ADMIN]
         assert len(admin_again) == 1
         assert "معتبر نیست" in client.messages[-1]["text"]

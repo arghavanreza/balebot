@@ -22,6 +22,7 @@ from bale import BaleClient, BaleError, DryRunBale
 from bot import BotContext, handle_update
 from faq import FaqRepository
 from routing import setup_authorized, webhook_authorized
+from pdf_declaration import load_font as load_declaration_font
 from sample_loader import load_sample_xlsx
 from state import StateRepository, UpdateDedupe
 from storage import CloudflareKV
@@ -135,6 +136,7 @@ async def _build_context(env: object) -> tuple[BotContext, object, bool] | tuple
         debtor_name=_env_str(env, "DEBTOR_NAME"),
         debtor_iban=_env_str(env, "DEBTOR_IBAN"),
         debtor_bic=_env_str(env, "DEBTOR_BIC"),
+        load_font=lambda: load_declaration_font(env),
     )
     return context, client, dry_run
 

@@ -7,9 +7,12 @@
   یعنی از بخش عددی بعد از IR، رقم‌های سوم تا پنجم برابر ۰۶۰ هستند.
   مثال: IRxx060… انتقال داخلی است حتی اگر مبلغ در بازهٔ پایا یا ساتنا باشد.
 - پایا: شبای بانک دیگر، مبلغ از ۱ ریال تا ۲٬۰۰۰٬۰۰۰٬۰۰۰ ریال (شامل خود سقف).
-- ساتنا: شبای بانک دیگر، مبلغ بیشتر از ۲ میلیارد تا ۵٬۰۰۰٬۰۰۰٬۰۰۰ ریال (شامل).
+- ساتنا: شبای بانک دیگر، مبلغ بیشتر از ۲ میلیارد.
+  تا ۵٬۰۰۰٬۰۰۰٬۰۰۰ ریال (شامل) ساتنای عادی است.
+  بیشتر از ۵ میلیارد همچنان ساتنا است، ولی needs_docs روی همان سطر روشن می‌شود
+  تا بازو از مشتری عکس یا PDF مدارک را بخواهد. پردازش قطع نمی‌شود.
 
-بالاتر از ۵ میلیارد برای هیچ کانالی پذیرفته نمی‌شود. شماره کارت ۱۶ رقمی حساب نیست.
+شماره کارت ۱۶ رقمی حساب نیست.
 شناسهٔ واریز اختیاری است؛ این نسخه برای هیچ کانالی اجباری‌اش نمی‌کند،
 ولی اگر پر شده باشد باید فقط رقم باشد.
 
@@ -144,6 +147,11 @@ class TransferRow:
     def channel_label(self) -> str:
         return CHANNEL_LABELS[self.channel]
 
+    @property
+    def needs_docs(self) -> bool:
+        """غیرمهر و بیشتر از سقف اسمی ساتنا. فایل ساتنا ساخته می‌شود و مدارک جدا خواسته می‌شود."""
+        return self.channel == "satna" and self.amount > SATNA_MAX_RIAL
+
 
 def format_rial(amount: int) -> str:
     """مبلغ را با جداکنندهٔ هزارگان و رقم فارسی نشان می‌دهد، فقط برای جملهٔ خطا."""
@@ -231,7 +239,8 @@ def parse_amount(raw: str) -> tuple[int | None, str | None]:
     """مبلغ ریالی را به عدد صحیح تبدیل می‌کند.
 
     ویرگول و «ریال» نادیده گرفته می‌شوند. اعشار قبول نیست تا ۱٫۵ ریال
-    با گرد کردن، کانال را عوض نکند. سقف همهٔ کانال‌ها همان سقف ساتنا است.
+    با گرد کردن، کانال را عوض نکند. بالاتر از سقف اسمی ساتنا هنوز عدد معتبر است؛
+    کانال همان ساتنا می‌ماند و پرچم مدارک جداگانه روشن می‌شود.
     """
     text = raw.translate(_DIGIT_FOLD).strip().lower()
     for word in ("ریال", "rial", "irr"):
@@ -247,8 +256,6 @@ def parse_amount(raw: str) -> tuple[int | None, str | None]:
     amount = int(text)
     if amount < 1:
         return None, "مبلغ باید حداقل ۱ ریال باشد."
-    if amount > SATNA_MAX_RIAL:
-        return None, f"مبلغ از سقف {format_rial(SATNA_MAX_RIAL)} ریال بیشتر است."
     return amount, None
 
 
@@ -294,12 +301,12 @@ def parse_destination(raw: str) -> tuple[Destination | None, str | None]:
 
 
 def channel_for(destination: Destination, amount: int) -> str:
-    """کانال را از مقصد و مبلغ برمی‌گرداند. مبلغ باید از قبل بین ۱ و سقف ساتنا باشد.
+    """کانال را از مقصد و مبلغ برمی‌گرداند. مبلغ باید از قبل حداقل ۱ ریال باشد.
 
     حساب داخلی و شبای ۰۶۰ همیشه داخلی‌اند. مبلغشان را به پایا و ساتنا برنمی‌گردانیم.
-    شبای بانک دیگر تا سقف پایا (شامل) پایا است و از آن به بعد ساتنا.
+    شبای بانک دیگر تا سقف پایا (شامل) پایا است و از آن به بعد ساتنا، حتی بالای ۵ میلیارد.
     """
-    if amount < 1 or amount > SATNA_MAX_RIAL:
+    if amount < 1:
         raise ValueError("amount out of range")
     if destination.kind == "account" or destination.bank_code == MEHR_BANK_CODE:
         return "internal"
@@ -496,11 +503,25 @@ def collect_transfer_rows(rows: list[tuple[int, list[str]]]) -> list[TransferRow
     return built
 
 
+def rows_by_channel(rows: list[TransferRow]) -> dict[str, list[TransferRow]]:
+    """سطرها را به سه فهرست جدا می‌کند تا هر کانال فایل خودش را بگیرد."""
+    grouped: dict[str, list[TransferRow]] = {"internal": [], "paya": [], "satna": []}
+    for row in rows:
+        grouped.setdefault(row.channel, []).append(row)
+    return grouped
+
+
+def any_needs_docs(rows: list[TransferRow]) -> bool:
+    """اگر حتی یک سطر مدارک بخواهد، بعد از ساخت فایل‌ها از مشتری عکس یا PDF می‌پرسیم."""
+    return any(row.needs_docs for row in rows)
+
+
 def format_channel_companion(rows: list[TransferRow], *, truncated: bool) -> str | None:
-    """متنی که کنار فایل پایا برای مدیر می‌ماند.
+    """متنی که کنار فایل‌های ccti برای مدیر می‌ماند.
 
     الگوی ccti جای شرح ندارد. اگر شرح را داخل XML بگذاریم واردکنندهٔ بانک ممکن است فایل را رد کند،
-    برای همین شرح پایا این‌جا می‌آید. داخلی و ساتنا اصلاً داخل ccti نیستند و همین متن بدنه‌شان است.
+    برای همین شرح این‌جا می‌آید. خود سطرهای داخلی و ساتنا فایل ccti جدا دارند؛
+    این متن رونوشت خوانا برای شعبه است، نه جایگزین آن فایل‌ها.
     اگر همه‌چیز پایا باشد و شرح و سقف حذف‌شده‌ای در کار نباشد، None برمی‌گردد تا فایل متنی اضافه نسازیم.
     """
     others = [row for row in rows if row.channel != "paya"]
@@ -509,7 +530,7 @@ def format_channel_companion(rows: list[TransferRow], *, truncated: bool) -> str
         return None
     parts: list[str] = []
     if others:
-        parts.append("سطرهای داخلی و ساتنا. سطرهای پایا در فایل ccti هستند.")
+        parts.append("رونوشت سطرهای داخلی و ساتنا. فایل ccti هر کانال جداگانه هم ارسال شده است.")
         parts.append(format_transfer_table(others, truncated=False))
     if notes:
         parts.append("شرح سطرهای پایا (در فایل ccti نیست):")

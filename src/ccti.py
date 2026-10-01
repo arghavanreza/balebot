@@ -1,8 +1,10 @@
-"""فایل پایا با الگوی CstmrCdtTrfInitn (نمونهٔ .ccti بانک).
+"""فایل انتقال با الگوی CstmrCdtTrfInitn (نمونهٔ .ccti بانک).
 
-فقط سطرهایی که کانالشان پایا است داخل این XML می‌روند. داخلی و ساتنا متن می‌مانند.
-شرح در این الگو فیلد ندارد. گذاشتنش در یک برچسب اضافه ممکن است واردکنندهٔ بانک را رد کند،
-برای همین شرح در متن همراه مدیر می‌ماند نه در خود فایل.
+هر بار یک کانال ساخته می‌شود: پایا، ساتنا، یا داخلی. پیش‌فرض پایا است تا
+فراخوان قدیمی همان فایل پایا را بگیرد. شرح در این الگو فیلد ندارد.
+گذاشتنش در یک برچسب اضافه ممکن است واردکنندهٔ بانک را رد کند،
+برای همین شرح در متن همراه مدیر و در فرم PDF می‌ماند نه در خود فایل.
+پروندهٔ مشتری (موبایل، نام، کد ملی) هم داخل XML اضافه نمی‌شود؛ پیام جدا برای مدیر است.
 
 تاریخ نمونه شمسی است (مثل ۱۴۰۳-۰۷-۱۰) نه میلادی. ساعت را به وقت تهران حساب می‌کنیم
 و بعد به جلالی تبدیل می‌کنیم، چون شعبه همین تقویم را در فایل انتظار دارد.
@@ -158,6 +160,23 @@ def _or_empty(value: str) -> str:
     return text if text else _EMPTY
 
 
+def _creditor_account(account: str) -> str:
+    """شبا در برچسب IBAN می‌نشیند. شماره حساب مهر IBAN نیست و در Othr/Id می‌رود.
+
+    همان جای Id داخل CdtrAcct است تا ساختار نمونه به‌هم نریزد.
+    """
+    safe = xml_text(account)
+    if account.startswith("IR"):
+        return f"\t\t\t\t\t\t<IBAN>{safe}</IBAN>"
+    return "\n".join(
+        [
+            "\t\t\t\t\t\t<Othr>",
+            f"\t\t\t\t\t\t\t<Id>{safe}</Id>",
+            "\t\t\t\t\t\t</Othr>",
+        ]
+    )
+
+
 def _transaction(row: TransferRow) -> str:
     # شناسهٔ واریز در هر دو شناسهٔ دستور می‌نشیند. شرح عمداً این‌جا نیست.
     payment_id = xml_text(_or_empty(row.deposit_id))
@@ -184,7 +203,7 @@ def _transaction(row: TransferRow) -> str:
             "\t\t\t\t</Cdtr>",
             "\t\t\t\t<CdtrAcct>",
             "\t\t\t\t\t<Id>",
-            f"\t\t\t\t\t\t<IBAN>{xml_text(row.account)}</IBAN>",
+            _creditor_account(row.account),
             "\t\t\t\t\t</Id>",
             "\t\t\t\t</CdtrAcct>",
             "\t\t\t</CdtTrfTxInf>",
@@ -198,20 +217,22 @@ def build_ccti(
     *,
     now_iso: str,
     nonce: int,
+    channel: str = "paya",
 ) -> str:
-    """XML پایا را می‌سازد. سطر غیرپایا را نادیده می‌گیرد.
+    """XML یک کانال را می‌سازد. پیش‌فرض پایا است. سطر کانال دیگر داخل همین فایل نمی‌آید.
 
     اگر بعد از این صافی چیزی نماند خطا می‌دهیم تا فایل خالی به بانک نرود.
     """
-    paya = [row for row in rows if row.channel == "paya"]
-    if not paya:
-        raise CctiConfigError("سطر پایا برای ساخت فایل ccti نیست.")
-    count = len(paya)
-    total = sum(row.amount for row in paya)
+    selected = [row for row in rows if row.channel == channel]
+    if not selected:
+        label = {"internal": "داخلی", "paya": "پایا", "satna": "ساتنا"}.get(channel, channel)
+        raise CctiConfigError(f"سطر {label} برای ساخت فایل ccti نیست.")
+    count = len(selected)
+    total = sum(row.amount for row in selected)
     created, execution = jalali_stamps(now_iso)
     message_id = make_msg_id(debtor.iban, now_iso, nonce)
     name = xml_text(debtor.name)
-    transactions = "\n".join(_transaction(row) for row in paya)
+    transactions = "\n".join(_transaction(row) for row in selected)
     return (
         '<?xml version="1.0" encoding="utf-8" standalone="yes"?>\n'
         "<Document>\n"

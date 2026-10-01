@@ -20,7 +20,7 @@ def test_customer_menu_has_friendly_labels_and_upload_hint_before_the_file():
         text = client.messages[-1]["text"]
         assert "فایل اکسل" in text
         assert "تأیید" in text
-        assert "فایل متنی" in text
+        assert "مدیر شعبه" in text
         labels = _labels(client.messages[-1])
         assert DEFAULT_TEXTS["btn_sample"] in labels
         assert DEFAULT_TEXTS["btn_sheba"] in labels
@@ -198,16 +198,18 @@ def test_start_welcomes_by_name_then_returns_without_inventing_history():
         await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=3), ctx)
         assert (await ctx.users.get(int(USER))).last_action is None
         await handle_update(_text(USER, "09120000000", update_id=4), ctx)
+        await handle_update(_text(USER, "علی رضایی", update_id=5), ctx)
+        await handle_update(_text(USER, "1234567891", update_id=6), ctx)
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=5), ctx)
-        await handle_update(_text(USER, "/start", update_id=6), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=7), ctx)
+        await handle_update(_text(USER, "/start", update_id=8), ctx)
         topic = _latest_greeting(client.messages)
         assert "خوش برگشتی" in topic
         assert DEFAULT_TEXTS["btn_sheba"] in topic
 
         client.files = {"file-1": _xlsx_bytes()}
-        await handle_update(_document(USER, update_id=7), ctx)
-        await handle_update(_text(USER, "/start", update_id=8), ctx)
+        await handle_update(_document(USER, update_id=9), ctx)
+        await handle_update(_text(USER, "/start", update_id=10), ctx)
         assert DEFAULT_TEXTS["topic_excel"] in _latest_greeting(client.messages)
 
     _run(scenario())
