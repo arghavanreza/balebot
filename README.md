@@ -9,17 +9,17 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 
 ### این بازو چه می‌کند
 
-- دکمهٔ «دریافت نمونه اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر. ستون‌ها: نام ذینفع، کدملی (اختیاری)، شماره شبا / حساب ذینفع، مبلغ به ریال، شناسه واریز (اختیاری)، شرح (اختیاری).
-- دکمهٔ «انتقال وجه تکی»: نام ذینفع، سپس شبا یا حساب، سپس مبلغ. خلاصه با دکمهٔ شیشه‌ای «تایید» / «رد» نشان داده می‌شود. فقط تایید برای مدیر پیام می‌سازد.
-- دکمهٔ «انتقال وجه گروهی» و داخل آن «ارسال لیست انتقال وجه»: مشتری فایل `.xlsx` را می‌فرستد. سطر معتبر به متن (با کانال هر سطر) تبدیل و فقط برای `ADMIN_ID` ارسال می‌شود. سطر نامعتبر به مدیر نمی‌رود.
+- دکمهٔ «📄 دریافت نمونه اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر. ستون‌ها: نام ذینفع، کدملی (اختیاری)، شماره شبا / حساب ذینفع، مبلغ به ریال، شناسه واریز (اختیاری)، شرح (اختیاری).
+- دکمهٔ «💸 انتقال وجه تکی»: نام ذینفع، سپس شبا یا حساب، سپس مبلغ. خلاصه با دکمهٔ شیشه‌ای «✅ تایید» / «❌ رد» نشان داده می‌شود. فقط تایید برای مدیر پیام می‌سازد.
+- دکمهٔ «📂 انتقال وجه گروهی» و داخل آن «📤 ارسال لیست انتقال وجه»: مشتری فایل `.xlsx` را می‌فرستد. سطر معتبر به مدیر می‌رود. سطر نامعتبر به مدیر نمی‌رود.
 - کانال از روی مقصد و مبلغ تعیین می‌شود: شبای بانک مهر (`060`، رقم سوم تا پنجم بعد از IR) یا شماره حساب مهر = داخلی؛ شبای بانک دیگر تا ۲ میلیارد ریال = پایا؛ بیشتر از آن تا ۵ میلیارد ریال = ساتنا.
 - سطر پایا برای مدیر فایل `.ccti` است (الگوی `CstmrCdtTrfInitn`، تاریخ شمسی، `PmtMtd` برابر `TRF`، ارز `IRR`). داخلی و ساتنا و شرح پایا متن می‌مانند. شبای مبدأ باید شبا معتبر بانک مهر باشد؛ شعبهٔ داخل شماره مهم نیست. پیش‌فرض موقت همان نمونهٔ بانک است و از منوی متن (`debtor_iban`) یا متغیر `DEBTOR_IBAN` عوض می‌شود.
 - پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید می‌گیرند، و اینکه فایل متنی برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
-- دکمهٔ «اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
-- دکمهٔ «پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
+- دکمهٔ «🏦 اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
+- دکمهٔ «❓ پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
 - اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها و پرسش‌ها از همان‌جا قابل ویرایش‌اند.
 - `/start` اگر پایگاه کاربران در دسترس باشد، بار اول با نام سلام می‌کند و بار بعد «خوش برگشتی» می‌گوید. اگر D1 نباشد همان خوش‌آمد عمومی است.
-- اگر مشتری هنوز شماره نداده باشد، بعد از خوش‌آمد شمارهٔ موبایل پرسیده می‌شود (دکمهٔ `request_contact` بله، یا تایپ `09…` / `+98…`). شماره در ستون `users.phone` می‌ماند. اگر از قبل باشد، دوباره پرسیده نمی‌شود.
+- اگر مشتری هنوز شماره نداده باشد، بازو تا ثبت موبایل قابل استفاده نیست. بعد از خوش‌آمد فقط دکمهٔ `request_contact` بله نشان داده می‌شود (یا تایپ `09…` / `+98…`). دکمه‌های نمونه، انتقال، شبا و پرسش‌ها، و فایل اکسل، تا ذخیرهٔ شماره در `users.phone` پاسخ خدمات نمی‌گیرند. انصراف این مرحله را رد نمی‌کند. مدیر (`ADMIN_ID`) بدون شماره هم پنل را می‌بیند. اگر شماره از قبل باشد، دوباره پرسیده نمی‌شود.
 - هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند و با `/stats` آمار امروز به وقت تهران را.
 - با هر فایل اکسل، علاوه بر خود فایل متنی، یک خلاصه برای مدیر می‌رود: شناسه، زمان تهران، نام، نام کاربری، موبایل (اگر ثبت شده باشد) و تعداد سطر.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
@@ -97,7 +97,7 @@ npx wrangler d1 migrations apply bale-bot-users --local
 
 مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`، `single`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند. `single` کد تازه است و به مهاجرت جدید نیاز ندارد؛ همان ستون متنی مقدار را نگه می‌دارد.
 
-مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. تا وقتی این ستون نباشد، خوش‌آمد و بقیهٔ بازو کار می‌کنند و فقط ذخیرهٔ شماره خطا می‌دهد.
+مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. مشتری تا پر شدن این ستون منوی خدمات را نمی‌بیند؛ اگر ستون هنوز نباشد، ذخیرهٔ شماره خطا می‌دهد و همان مشتری پشت درخواست شماره می‌ماند. مدیر به این ستون وابسته نیست. اگر خود D1 قطع باشد، در شماره بسته نمی‌شود تا بقیهٔ بازو جواب بدهد.
 
 مهاجرت `migrations/0004_events.sql` جدول `events` را می‌سازد: `user_id`، `kind` (`excel` / `faq` / `sheba` / `sample`)، `detail` (برای پرسش، متن کوتاه سؤال) و `created_at` به وقت UTC. دستور `/stats` از همین جدول و از `first_seen_at` / `last_seen_at` می‌خواند. اگر جدول نباشد، شمارش کاربران امروز همچنان می‌آید و شمارش رویدادها یک جملهٔ راهنما است.
 
@@ -217,19 +217,19 @@ uv run pywrangler secret put ADMIN_ID
 
 شناسه در لاگ ورکر هم هنگام `/start` و `/id` چاپ می‌شود: `uv run pywrangler tail`.
 
-بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد و برای بقیه خوش‌آمد و دکمه‌های کاربر (نمونهٔ حقوق، اعتبارسنجی شبا، پرسش‌های متداول) را.
+بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد. برای بقیه، تا ثبت شمارهٔ موبایل فقط درخواست مخاطب می‌آید و بعد از آن خوش‌آمد و دکمه‌های کاربر (نمونهٔ اکسل، انتقال تکی، انتقال گروهی، اعتبارسنجی شبا، پرسش‌های متداول). `/id` حتی پیش از شماره جواب می‌دهد، ولی کیبورد خدمات را باز نمی‌کند.
 
 ### ۹. ویرایش متن‌ها (مدیر)
 
 1. `/start`
-2. «ویرایش متن»
+2. «✏️ ویرایش متن»
 3. شماره یا نام کلید را بفرستید (مثلاً `1` یا `welcome`)
 4. متن جدید را در پیام بعدی بفرستید
-5. «انصراف»، «بازگشت»، `/cancel` یا `/start` جریان را قطع می‌کند
+5. «✖️ انصراف»، «↩️ بازگشت»، `/cancel` یا `/start` جریان را قطع می‌کند
 
 کلیدها و متن پیش‌فرض در `src/texts.py` هستند. برچسب دکمه‌ها هم کلیدند (`btn_sample`، `btn_sheba`، `btn_faq`، `btn_faq_edit`، `btn_faq_back`، `btn_edit`، `btn_back`، `btn_cancel`). بعد از ذخیره، کیبورد بعدی برچسب جدید را نشان می‌دهد. برچسب‌ها را تکراری نگذارید.
 
-جملهٔ پیش از ارسال فایل حقوق کلید `excel_upload_hint` است. اگر در KV هنوز عین پیش‌فرض نسخهٔ قبل مانده باشد (مثلاً دکمهٔ «دریافت سمپل اکسل» یا «بررسی شبا»)، بار بعد با پیش‌فرض جدید عوض می‌شود. متنی که خودتان ذخیره کرده‌اید دست نمی‌خورد.
+جملهٔ پیش از ارسال فایل حقوق کلید `excel_upload_hint` است. اگر در KV هنوز عین پیش‌فرض نسخهٔ قبل مانده باشد (مثلاً دکمهٔ «دریافت سمپل اکسل»، «بررسی شبا»، یا برچسب‌های بدون ایموجی مثل «نمونه فایل برای واریز حقوق»)، بار بعد با پیش‌فرض جدید عوض می‌شود. متنی که خودتان ذخیره کرده‌اید دست نمی‌خورد.
 
 | کلید خوش‌آمد | کی دیده می‌شود | جای‌نگهدار |
 | --- | --- | --- |
@@ -279,11 +279,11 @@ uv run pywrangler secret put ADMIN_ID
 
 از منوی مدیر، بدون استقرار مجدد:
 
-1. «ویرایش پرسش‌ها»
+1. «✏️ ویرایش پرسش‌ها»
 2. شمارهٔ ردیف را بفرستید، بعد متن پرسش، بعد متن پاسخ
 3. `جدید` برای افزودن (حداکثر ۱۰ پرسش)
 4. `حذف ۲` یا `حذف۲` برای حذف همان ردیف
-5. «بازگشت»، «انصراف»، `/cancel` یا `/start` بیرون می‌آید
+5. «↩️ بازگشت»، «✖️ انصراف»، `/cancel` یا `/start` بیرون می‌آید
 
 کلمهٔ افزودن کلید `faq_cmd_add` است و پیشوند حذف کلید `faq_cmd_delete`. اگر این دو را عوض کنید، راهنمای `faq_admin_prompt` را هم با همان کلمه‌ها هم‌خوان کنید.
 
@@ -300,7 +300,7 @@ uv run pywrangler secret put ADMIN_ID
 | `trace` | اگر مبلغ ننشست |
 | `limits` | سقف انتقال |
 
-مشتری در منو «پرسش‌های متداول» را می‌زند، شماره یا دکمهٔ پرسش را انتخاب می‌کند، و با «بازگشت به پرسش‌ها» یا «بازگشت» برمی‌گردد. بیرون از این فهرست، فرستادن عدد تنها اولین پاسخ را باز نمی‌کند.
+مشتری در منو «❓ پرسش‌های متداول» را می‌زند، شماره یا دکمهٔ پرسش را انتخاب می‌کند، و با «↩️ بازگشت به پرسش‌ها» یا «↩️ بازگشت» برمی‌گردد. بیرون از این فهرست، فرستادن عدد تنها اولین پاسخ را باز نمی‌کند.
 
 ### ۹.۲ خوش‌آمد شخصی
 
@@ -313,7 +313,7 @@ uv run pywrangler secret put ADMIN_ID
 - اگر نام در پرونده نباشد: اولین بار همان `welcome`، و بازگشت `welcome_back_plain`
 - اگر D1 وصل نباشد یا `get` خطا بدهد: کلید `welcome`، و بازو خراب نمی‌شود
 - اگر فقط ستون `last_action` هنوز نباشد: خوش‌آمد با نام می‌ماند و موضوعی ساخته نمی‌شود
-- اگر مشتری مدیر نباشد و `phone` در پرونده خالی باشد، پیام بعدی شماره می‌خواهد. دکمهٔ اول `request_contact` بله است؛ تایپ `09…` یا `+98…` هم پذیرفته می‌شود. «انصراف» یا دکمه‌های منو گفتگو را بدون شماره ادامه می‌دهند. مدیر این پرسش را نمی‌بیند تا پنلش جابه‌جا نشود.
+- اگر مشتری مدیر نباشد و `phone` در پرونده خالی باشد، منوی خدمات نشان داده نمی‌شود. فقط دکمهٔ `request_contact` بله می‌آید؛ تایپ `09…` یا `+98…` هم پذیرفته می‌شود. انصراف، دکمه‌های نمونه و شبا و پرسش، و فایل اکسل تا ثبت شماره یک یادآوری کوتاه می‌گیرند و انجام نمی‌شوند. مدیر این در را نمی‌بیند و پنلش بدون شماره هم باز است.
 
 جملهٔ فایل حقوق (`excel_upload_hint`) و راهنمای دکمه‌ها (`welcome_hint`) زیر هر دو نوع خوش‌آمد می‌آیند.
 
@@ -370,11 +370,11 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 
 | دستور یا دکمه | کار |
 | --- | --- |
-| `/start` | منوی کاربر یا مدیر؛ برای مشتریِ بدون شماره، درخواست موبایل هم می‌آید |
-| `/id` | نمایش شناسهٔ عددی |
+| `/start` | منوی کاربر یا مدیر؛ مشتریِ بدون شماره فقط درخواست موبایل را می‌بیند |
+| `/id` | نمایش شناسهٔ عددی؛ برای مشتریِ بدون شماره کیبورد همان درخواست موبایل است |
 | `/users` | فقط مدیر: فهرست کاربران اخیر از D1 |
 | `/stats` | فقط مدیر: آمار امروز به وقت تهران |
-| `/cancel` | لغو جریان فعلی |
+| `/cancel` | لغو جریان فعلی؛ انصراف از دادن شماره، منوی خدمات را باز نمی‌کند |
 | نمونه فایل برای واریز حقوق | ارسال نمونه برای خود کاربر |
 | اعتبارسنجی شبا | درخواست شبا؛ تا پاسخ معتبر یا انصراف در همین حالت می‌ماند |
 | پرسش‌های متداول | فهرست پرسش شعبه؛ شماره یا دکمه پاسخ را باز می‌کند |
@@ -399,16 +399,19 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 
 ### What it does
 
-- Accepts an `.xlsx` upload, converts the first sheet to tab-separated UTF-8 text, and sends that text file to `ADMIN_ID` with `sendDocument`. The sender only gets an acknowledgement.
-- Reply-keyboard button «نمونه فایل برای واریز حقوق» sends `assets/sample.xlsx` so customers can see the expected columns (`name`, `amount`, `sheba`).
-- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives a text file.
-- Reply-keyboard button «اعتبارسنجی شبا» asks for an Iranian IBAN and answers valid or invalid.
-- Reply-keyboard button «پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
+- Reply-keyboard button «📄 دریافت نمونه اکسل» sends `assets/sample.xlsx`. Columns: beneficiary name, optional national id, sheba or account, amount in Rials, optional deposit id, optional description.
+- «💸 انتقال وجه تکی» walks through name, destination, and amount, then an inline «✅ تایید» / «❌ رد» keyboard. Only a confirm notifies the admin.
+- «📂 انتقال وجه گروهی» asks for an `.xlsx`. Valid rows go to `ADMIN_ID`; any invalid row rejects the whole file.
+- A Bank Mehr sheba (code `060`, any branch) or an 8–18 digit account (except 16) is internal. Another bank’s sheba up to 2,000,000,000 Rials is paya; above that through 5,000,000,000 is satna.
+- Paya rows become a `.ccti` file (`CstmrCdtTrfInitn`, Jalali timestamps, `TRF`, `IRR`). Internal and satna rows, and paya descriptions, stay in the Persian text. The debtor IBAN must be a valid Mehr sheba (`060`); the branch digits are not checked.
+- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives the result.
+- Reply-keyboard button «🏦 اعتبارسنجی شبا» asks for an Iranian IBAN and answers valid or invalid.
+- Reply-keyboard button «❓ پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
 - When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits customer-facing strings and FAQ entries at runtime (Workers KV, not a redeploy).
 - With D1 available, `/start` greets a first visit by `first_name` and a later visit with «خوش برگشتی», plus the last real action when one is stored. If D1 is down, the generic `welcome` text is used.
-- After that greeting, a customer with no stored mobile is asked for one. The keyboard uses Bale `request_contact`; typed `09…` / `+98…` is accepted too. The number is stored on `users.phone`. A return visit that already has a phone skips the question.
+- Until a non-admin has a mobile stored on `users.phone`, the bot does not offer the sample, transfer, Sheba, or FAQ keyboard. `/start` shows the greeting plus a Bale `request_contact` button (typed `09…` / `+98…` is accepted too). Other feature attempts, including an `.xlsx` upload, get a short reminder and are not processed. Cancel does not skip the step. `ADMIN_ID` keeps the admin panel with or without a phone. A return visit that already has a phone skips the question. If D1 itself is unavailable, the gate stays open so the rest of the bot can still answer.
 - Every user who sends a message or callback is upserted into Cloudflare D1. The admin lists recent users with `/users` and today’s Tehran-time counts with `/stats`.
-- An Excel upload still delivers the `.txt` file to the admin, and also a summary message: user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
+- An Excel upload still goes only to the admin: paya rows as a `.ccti` file, other rows as text, plus a summary message with user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
 The Excel mapping is explicitly temporary. Change `convert_excel_to_text(data: bytes) -> str` in `src/excel_convert.py`. There is a TODO in that file.
@@ -481,7 +484,7 @@ npx wrangler d1 migrations apply bale-bot-users --local
 
 `migrations/0002_last_action.sql` adds `users.last_action` (`sample`, `sheba`, `faq`, or `excel`) for the return greeting. Until that migration is applied, the bot still greets by name and does not invent a previous topic. Saving a phone number does not change `last_action`.
 
-`migrations/0003_phone.sql` adds nullable `users.phone`. Stored values look like `+989` plus 10 digits. Until that column exists, chat still works and only the phone write fails soft.
+`migrations/0003_phone.sql` adds nullable `users.phone`. Stored values look like `+989` plus 10 digits. Customers stay on the phone step until that column can store a number. Admins are not blocked. If D1 itself is down, the phone gate stays open.
 
 `migrations/0004_events.sql` creates `events` (`user_id`, `kind`, `detail`, `created_at` in UTC). Kinds are `excel` (text file delivered to the admin), `faq` (an answer was opened; `detail` is a short question), `sheba` (the check was started), and `sample` (the sample file was sent). `/stats` counts `users.last_seen_at` / `first_seen_at` and these rows inside the Tehran day. If the events table is missing, user counts still return and the event section says to apply the migration.
 
@@ -577,7 +580,7 @@ uv run pywrangler secret put ADMIN_ID
 
 ### 9. Edit texts
 
-As the admin: `/start` → «ویرایش متن» → send a key number or name (for example `welcome`) → send the new text. «انصراف», «بازگشت», `/cancel`, and `/start` leave the flow.
+As the admin: `/start` → «✏️ ویرایش متن» → send a key number or name (for example `welcome`) → send the new text. «✖️ انصراف», «↩️ بازگشت», `/cancel`, and `/start` leave the flow.
 
 Button labels are keys too (`btn_sample`, `btn_sheba`, `btn_faq`, `btn_faq_edit`, `btn_faq_back`, `btn_edit`, `btn_back`, `btn_cancel`). The next keyboard uses the saved labels. Keep those labels unique.
 
@@ -620,17 +623,17 @@ FAQ entries live in the KV key `bot_faq` (not inside `bot_texts`):
 
 From the admin menu, without a redeploy:
 
-1. «ویرایش پرسش‌ها»
+1. «✏️ ویرایش پرسش‌ها»
 2. Send the row number, then the question, then the answer
 3. `جدید` adds one (10 items maximum). The word is the text key `faq_cmd_add`
 4. `حذف ۲` deletes that row. The prefix is the text key `faq_cmd_delete`
-5. «بازگشت», «انصراف», `/cancel`, or `/start` leaves the flow
+5. «↩️ بازگشت», «✖️ انصراف», `/cancel`, or `/start` leaves the flow
 
 If you rename `faq_cmd_add` or `faq_cmd_delete`, edit `faq_admin_prompt` so the hint uses the same words.
 
 Seeded ids: `open-account`, `settlement`, `fee`, `sheba-docs`, `hours`, `payroll-file`, `trace`, `limits`. The copy is branch-placeholder text (no fixed fee or hours) and can be replaced in the admin flow.
 
-Customers open «پرسش‌های متداول», tap a button or send a number, then use «بازگشت به پرسش‌ها» or «بازگشت». A bare number outside that screen does not open the first answer.
+Customers open «❓ پرسش‌های متداول», tap a button or send a number, then use «↩️ بازگشت به پرسش‌ها» or «↩️ بازگشت». A bare number outside that screen does not open the first answer.
 
 ### 9.2 Personalized /start
 
@@ -643,7 +646,7 @@ Only `/start`, and only for non-admins. Leaving another flow shows the ordinary 
 - No `first_name`: first visit uses `welcome`; a later visit uses `welcome_back_plain`
 - D1 missing or `get` failing: generic `welcome`, and the chat still works
 - If only the `last_action` column is missing, the name greeting still works and no topic is invented
-- If the sender is not the admin and `phone` is empty, the next message asks for a mobile number. The first button is Bale `request_contact`; typed `09…` or `+98…` is normalized lightly. «انصراف» or a menu button continues without a number. Admins are not asked, so the admin keyboard stays in place.
+- If the sender is not the admin and `phone` is empty, the service menu stays hidden. The only button is Bale `request_contact`; typed `09…` or `+98…` is normalized lightly. Cancel, the sample/Sheba/FAQ buttons, and Excel uploads are reminded to send a phone first and do not run. Admins are not gated, so the admin keyboard stays in place.
 
 `welcome_hint` and `excel_upload_hint` are appended under both greetings.
 
@@ -683,17 +686,17 @@ The object key must be `sample.xlsx`.
 Valid placeholder: `IR430120000000000000000001`  
 Invalid: `IR000000000000000000000000`
 
-A failed check leaves the bot waiting for another number. A valid check, «انصراف», or another menu button leaves the flow.
+A failed check leaves the bot waiting for another number. A valid check, «✖️ انصراف», or another menu button leaves the flow.
 
 ### User commands
 
 | Input | Result |
 | --- | --- |
-| `/start` | User menu, or admin menu when the id matches. Customers without a phone are then asked for one |
-| `/id` | Replies with the numeric user id |
+| `/start` | User menu, or admin menu when the id matches. Customers without a phone see only the contact request |
+| `/id` | Replies with the numeric user id. Without a stored phone the keyboard stays on the contact request |
 | `/users` | Admin only: recent users from D1 |
 | `/stats` | Admin only: today’s counts in Tehran time |
-| `/cancel` | Cancels Sheba entry, text editing, or the phone prompt |
+| `/cancel` | Cancels Sheba entry or text editing. It does not skip the required phone step |
 | Payroll sample button | `sendDocument` of `sample.xlsx` to that chat |
 | Sheba button | Asks for an IBAN |
 | FAQ button | Lists branch questions; a number or button shows the answer |

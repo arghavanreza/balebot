@@ -242,7 +242,7 @@ def test_admin_can_edit_a_text_and_a_user_sees_it():
     async def scenario():
         client = FakeBale()
         ctx = _ctx(client)
-        await handle_update(_text(ADMIN, "ویرایش متن", update_id=1), ctx)
+        await handle_update(_text(ADMIN, DEFAULT_TEXTS["btn_edit"], update_id=1), ctx)
         assert "welcome" in client.messages[-1]["text"]
         await handle_update(_text(ADMIN, "welcome", update_id=2), ctx)
         assert "متن جدید" in client.messages[-1]["text"]
@@ -252,7 +252,7 @@ def test_admin_can_edit_a_text_and_a_user_sees_it():
         await handle_update(_text(USER, "/start", update_id=4), ctx)
         assert client.messages[-1]["text"].startswith("درود بر شما")
 
-        await handle_update(_text(USER, "ویرایش متن", update_id=5), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_edit"], update_id=5), ctx)
         assert "فقط برای مدیر" in client.messages[-1]["text"]
 
     _run(scenario())
@@ -338,13 +338,14 @@ def test_admin_users_command_and_failures_do_not_break_chat():
         ctx.users = store
         ctx.clock = lambda: "2026-10-01T00:00:00Z"
         await handle_update(_text(USER, "/start", update_id=1, username="ali"), ctx)
-        await handle_update(_text(ADMIN, "/users", update_id=2), ctx)
+        await handle_update(_text(USER, "09120000000", update_id=2, username="ali"), ctx)
+        await handle_update(_text(ADMIN, "/users", update_id=3), ctx)
         listing = client.messages[-1]["text"]
         assert "@ali" in listing
         assert USER in listing
         assert "کاربران اخیر" in listing
 
-        await handle_update(_text(USER, "/users", update_id=3), ctx)
+        await handle_update(_text(USER, "/users", update_id=4), ctx)
         assert "فقط برای مدیر" in client.messages[-1]["text"]
 
         class Boom:
@@ -355,15 +356,15 @@ def test_admin_users_command_and_failures_do_not_break_chat():
                 raise RuntimeError("no table")
 
         ctx.users = Boom()
-        # /start قبلی جریان شماره را باز کرده؛ اول آن را می‌بندیم تا متن عادی همان پاسخ قبلی را بگیرد.
-        await handle_update(_text(USER, "/cancel", update_id=4), ctx)
+        # پایگاه بعدی set_phone ندارد، پس در شماره بسته نیست و متن عادی همان پاسخ ناشناس را می‌گیرد.
+        await handle_update(_text(USER, "/cancel", update_id=5), ctx)
         await handle_update(_text(USER, "سلام", update_id=8), ctx)
         assert "متوجه نشدم" in client.messages[-1]["text"]
-        await handle_update(_text(ADMIN, "/users", update_id=5), ctx)
+        await handle_update(_text(ADMIN, "/users", update_id=6), ctx)
         assert "فهرست کاربران" in client.messages[-1]["text"]
 
         ctx.users = None
-        await handle_update(_text(ADMIN, "/users", update_id=6), ctx)
+        await handle_update(_text(ADMIN, "/users", update_id=9), ctx)
         assert "پایگاه کاربران وصل نیست" in client.messages[-1]["text"]
 
         fresh = MemoryUserStore()

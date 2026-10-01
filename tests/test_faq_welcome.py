@@ -192,16 +192,22 @@ def test_start_welcomes_by_name_then_returns_without_inventing_history():
         assert "خوش برگشتی" in again
         assert "علی" in again
         assert "دفعهٔ قبل" not in again
+        assert "موبایل" in client.messages[-1]["text"]
 
+        # بدون شماره، دکمهٔ شبا موضوع خوش‌آمد نمی‌سازد.
         await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=3), ctx)
-        await handle_update(_text(USER, "/start", update_id=4), ctx)
+        assert (await ctx.users.get(int(USER))).last_action is None
+        await handle_update(_text(USER, "09120000000", update_id=4), ctx)
+
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=5), ctx)
+        await handle_update(_text(USER, "/start", update_id=6), ctx)
         topic = _latest_greeting(client.messages)
         assert "خوش برگشتی" in topic
         assert DEFAULT_TEXTS["btn_sheba"] in topic
 
         client.files = {"file-1": _xlsx_bytes()}
-        await handle_update(_document(USER, update_id=5), ctx)
-        await handle_update(_text(USER, "/start", update_id=6), ctx)
+        await handle_update(_document(USER, update_id=7), ctx)
+        await handle_update(_text(USER, "/start", update_id=8), ctx)
         assert DEFAULT_TEXTS["topic_excel"] in _latest_greeting(client.messages)
 
     _run(scenario())
@@ -222,7 +228,7 @@ def test_start_without_a_name_and_when_d1_fails_stays_generic():
         nameless_again["message"]["from"].pop("first_name")
         await handle_update(nameless_again, ctx)
         returned = _latest_greeting(client.messages)
-        assert returned.startswith("خوش برگشتی")
+        assert "خوش برگشتی" in returned
         assert "علی" not in returned
         assert "دفعهٔ قبل" not in returned
 
@@ -246,7 +252,7 @@ def test_start_without_a_name_and_when_d1_fails_stays_generic():
         assert "خوش برگشتی" not in generic
 
         await handle_update(_text(ADMIN, "/start", update_id=4), ctx)
-        assert client.messages[-1]["text"].startswith("پنل مدیر")
+        assert "پنل مدیر" in client.messages[-1]["text"]
         assert DEFAULT_TEXTS["btn_faq_edit"] in _labels(client.messages[-1])
 
     _run(scenario())

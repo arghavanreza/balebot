@@ -88,8 +88,8 @@ def test_single_transfer_confirm_notifies_admin_and_reject_does_not():
         assert "250000" in summary["text"]
         assert "پایا" in summary["text"]
         buttons = summary["reply_markup"]["inline_keyboard"][0]
-        assert buttons[0]["text"] == "تایید"
-        assert buttons[1]["text"] == "رد"
+        assert buttons[0]["text"] == DEFAULT_TEXTS["btn_transfer_ok"]
+        assert buttons[1]["text"] == DEFAULT_TEXTS["btn_transfer_no"]
         reject_data = buttons[1]["callback_data"]
         confirm_data = buttons[0]["callback_data"]
 
