@@ -145,28 +145,30 @@ def test_start_welcomes_by_name_then_returns_without_inventing_history():
         ctx.users = MemoryUserStore()
 
         await handle_update(_text(USER, "/start", update_id=1), ctx)
-        first = client.messages[-1]["text"]
+        first = _latest_greeting(client.messages)
         assert "علی" in first
         assert "خوش آمدید" in first
         assert "خوش برگشتی" not in first
         assert "دفعهٔ قبل" not in first
+        # شماره بعد از خوش‌آمد پرسیده می‌شود و جای خود خوش‌آمد را نمی‌گیرد.
+        assert "موبایل" in client.messages[-1]["text"]
 
         await handle_update(_text(USER, "/start", update_id=2), ctx)
-        again = client.messages[-1]["text"]
+        again = _latest_greeting(client.messages)
         assert "خوش برگشتی" in again
         assert "علی" in again
         assert "دفعهٔ قبل" not in again
 
         await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=3), ctx)
         await handle_update(_text(USER, "/start", update_id=4), ctx)
-        topic = client.messages[-1]["text"]
+        topic = _latest_greeting(client.messages)
         assert "خوش برگشتی" in topic
         assert DEFAULT_TEXTS["btn_sheba"] in topic
 
         client.files = {"file-1": _xlsx_bytes()}
         await handle_update(_document(USER, update_id=5), ctx)
         await handle_update(_text(USER, "/start", update_id=6), ctx)
-        assert DEFAULT_TEXTS["topic_excel"] in client.messages[-1]["text"]
+        assert DEFAULT_TEXTS["topic_excel"] in _latest_greeting(client.messages)
 
     _run(scenario())
 
@@ -179,12 +181,13 @@ def test_start_without_a_name_and_when_d1_fails_stays_generic():
         nameless = _text(USER, "/start", update_id=1)
         nameless["message"]["from"].pop("first_name")
         await handle_update(nameless, ctx)
-        assert client.messages[-1]["text"].startswith(DEFAULT_TEXTS["welcome"])
+        assert _latest_greeting(client.messages).startswith(DEFAULT_TEXTS["welcome"])
+        assert "موبایل" in client.messages[-1]["text"]
 
         nameless_again = _text(USER, "/start", update_id=2)
         nameless_again["message"]["from"].pop("first_name")
         await handle_update(nameless_again, ctx)
-        returned = client.messages[-1]["text"]
+        returned = _latest_greeting(client.messages)
         assert returned.startswith("خوش برگشتی")
         assert "علی" not in returned
         assert "دفعهٔ قبل" not in returned
@@ -213,6 +216,15 @@ def test_start_without_a_name_and_when_d1_fails_stays_generic():
         assert DEFAULT_TEXTS["btn_faq_edit"] in _labels(client.messages[-1])
 
     _run(scenario())
+
+
+def _latest_greeting(messages: list[dict]) -> str:
+    """آخرین خوش‌آمد را برمی‌گرداند. درخواست شماره ممکن است بعد از آن آمده باشد."""
+    for message in reversed(messages):
+        text = message["text"]
+        if "خوش آمدید" in text or "خوش برگشتی" in text:
+            return text
+    raise AssertionError("greeting missing")
 
 
 def _labels(message: dict) -> list[str]:

@@ -7,10 +7,14 @@ wrangler.jsonc با نام DB تعریف شده است. این ماژول دو �
 - برای مدیر، تازه‌ترین کاربران را از همان جدول بخواند.
 
 منطق گفتگو به خود D1 وصل نیست. تست‌ها از MemoryUserStore استفاده می‌کنند
-و ورکر از D1UserStore. هر دو touch، list_recent، get و set_last_action را دارند.
+و ورکر از D1UserStore. هر دو touch، list_recent، get، set_last_action،
+set_phone، record_event و stats_between را دارند.
 
 ستون last_action (مهاجرت ۰۰۰۲) فقط آخرین کار را نگه می‌دارد: sample، sheba،
 faq یا excel. خالی بودنش یعنی موضوعی برای «خوش برگشتی» ساخته نمی‌شود.
+ستون phone (مهاجرت ۰۰۰۳) شمارهٔ موبایل است و جدا از last_action به‌روز می‌شود
+تا ثبت شماره، موضوع خوش‌آمد را پاک نکند. رویدادهای آمار در جدول events
+(مهاجرت ۰۰۰۴) هستند، نه روی خود ردیف کاربر.
 """
 
 from __future__ import annotations
@@ -18,6 +22,18 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Protocol
+
+from phone import normalize_phone
+from stats import (
+    COUNT_ACTIVE_SQL,
+    COUNT_KINDS_SQL,
+    COUNT_NEW_SQL,
+    EVENT_KINDS,
+    INSERT_EVENT_SQL,
+    TOP_FAQ_SQL,
+    StatsSnapshot,
+    prepare_event,
+)
 
 # سقف فهرست /users تا پاسخ از حد پیام بله (حدود ۴۰۹۶ نویسه) رد نشود.
 RECENT_USER_LIMIT = 20
@@ -58,16 +74,24 @@ ORDER BY last_seen_at DESC, user_id DESC
 LIMIT ?
 """.strip()
 
-# خواندن یک نفر برای خوش‌آمد. last_action همان ستون مهاجرت ۰۰۰۲ است.
+# خواندن یک نفر برای خوش‌آمد. phone و last_action ستون‌های مهاجرت بعدی‌اند.
 GET_USER_SQL = """
+SELECT user_id, username, first_name, last_name, language_code,
+       is_admin, first_seen_at, last_seen_at, message_count, last_action, phone
+FROM users
+WHERE user_id = ?
+""".strip()
+
+# اگر ستون phone هنوز نباشد، نام و آخرین کار را از شکل مهاجرت ۰۰۰۲ می‌خوانیم.
+GET_USER_SQL_NO_PHONE = """
 SELECT user_id, username, first_name, last_name, language_code,
        is_admin, first_seen_at, last_seen_at, message_count, last_action
 FROM users
 WHERE user_id = ?
 """.strip()
 
-# اگر ستون last_action هنوز ساخته نشده باشد، همین پرس‌وجو نام را برمی‌گرداند
-# و موضوع آخرین کار خالی می‌ماند. تاریخچهٔ ساختگی ساخته نمی‌شود.
+# اگر ستون last_action هم هنوز ساخته نشده باشد، همین پرس‌وجو نام را برمی‌گرداند
+# و موضوع آخرین کار و شماره خالی می‌مانند. تاریخچهٔ ساختگی ساخته نمی‌شود.
 GET_USER_SQL_LEGACY = """
 SELECT user_id, username, first_name, last_name, language_code,
        is_admin, first_seen_at, last_seen_at, message_count
@@ -77,7 +101,11 @@ WHERE user_id = ?
 
 # فقط آخرین کار عوض می‌شود. شمارنده و first_seen_at این‌جا دست نمی‌خورند
 # چون خود touch آن‌ها را موقع هر آپدیت به‌روز کرده است.
+# شماره هم این‌جا نیست: set_phone ستون خودش را می‌نویسد.
 SET_LAST_ACTION_SQL = "UPDATE users SET last_action = ? WHERE user_id = ?"
+
+# شماره جدا از upsert است تا پایگاهِ بدون ستون phone هنوز بتواند کاربر را ثبت کند.
+SET_PHONE_SQL = "UPDATE users SET phone = ? WHERE user_id = ?"
 
 # کدهای مجاز. هر چیز دیگر در ستون نمی‌نشیند تا خوش‌آمد جملهٔ ناشناس نسازد.
 LAST_ACTIONS = frozenset({"sample", "sheba", "faq", "excel"})
@@ -103,6 +131,8 @@ class UserProfile:
     message_count: int
     # None یعنی هنوز کاری ثبت نشده یا ستون مهاجرت نشده است.
     last_action: str | None = None
+    # None یعنی شماره نگرفته‌ایم یا ستون phone هنوز ساخته نشده است.
+    phone: str | None = None
 
 
 class UserStore(Protocol):
@@ -119,6 +149,25 @@ class UserStore(Protocol):
 
     async def set_last_action(self, user_id: int, action: str) -> None:
         """آخرین کار را ذخیره می‌کند. کد ناشناس و کاربر غایب عمداً نادیده گرفته می‌شوند."""
+
+    async def set_phone(self, user_id: int, phone: str) -> None:
+        """شمارهٔ نرمال‌شده را ذخیره می‌کند. last_action را عوض نمی‌کند.
+
+        شماره موضوع منو نیست. جملهٔ خوش‌آمد فقط sample و sheba و faq و excel را می‌شناسد،
+        پس ثبت موبایل نباید آن موضوع را پاک یا عوض کند.
+        """
+
+    async def record_event(
+        self,
+        user_id: int,
+        kind: str,
+        created_at: str,
+        detail: str | None = None,
+    ) -> None:
+        """یک رویداد آمار می‌نویسد. kind ناشناس نوشته نمی‌شود."""
+
+    async def stats_between(self, start_iso: str, end_iso: str) -> StatsSnapshot:
+        """شمارش کاربران و رویدادها در بازهٔ نیمه‌باز [start, end)."""
 
 
 def _coerce_user_id(value: object) -> int | None:
@@ -157,6 +206,13 @@ def _as_bool_flag(value: object) -> bool:
     return False
 
 
+def _count_value(rows: list[dict]) -> int:
+    """عدد ستون n از یک ردیف COUNT. ردیف خالی یعنی صفر، نه خطا."""
+    if not rows:
+        return 0
+    return _coerce_count(rows[0].get("n"))
+
+
 def _coerce_count(value: object) -> int:
     if isinstance(value, bool) or value is None:
         return 0
@@ -187,6 +243,7 @@ def profile_from_bale_user(user: object, *, is_admin: bool, seen_at: str) -> Use
         last_seen_at=seen_at,
         message_count=0,
         last_action=None,
+        phone=None,
     )
 
 
@@ -230,24 +287,36 @@ def format_recent_users(profiles: list[UserProfile]) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class MemoryEvent:
+    """یک ردیف events در حافظهٔ تست. شکل ستون‌های D1 را تکرار می‌کند."""
+
+    user_id: int
+    kind: str
+    created_at: str
+    detail: str | None = None
+
+
 class MemoryUserStore:
     """همان قانون upsert، داخل یک دیکشنری. برای تست است، نه برای ورکر."""
 
     def __init__(self) -> None:
         self.by_id: dict[int, UserProfile] = {}
+        self.events: list[MemoryEvent] = []
 
     async def touch(self, profile: UserProfile) -> None:
         current = self.by_id.get(profile.user_id)
         if current is None:
             self.by_id[profile.user_id] = replace(profile, message_count=1)
             return
-        # اولین بازدید و آخرین کار می‌مانند. touch از روی پیام بله ساخته می‌شود
-        # و last_action را ندارد؛ اگر این‌جا کپی شود، موضوع قبلی پاک می‌شود.
+        # اولین بازدید، آخرین کار و شماره می‌مانند. touch از روی پیام بله ساخته می‌شود
+        # و این فیلدها را ندارد؛ اگر این‌جا کپی نشوند، موضوع و موبایل قبلی پاک می‌شود.
         self.by_id[profile.user_id] = replace(
             profile,
             first_seen_at=current.first_seen_at,
             message_count=current.message_count + 1,
             last_action=current.last_action,
+            phone=current.phone,
         )
 
     async def get(self, user_id: int) -> UserProfile | None:
@@ -260,6 +329,59 @@ class MemoryUserStore:
         if current is None:
             return
         self.by_id[user_id] = replace(current, last_action=action)
+
+    async def set_phone(self, user_id: int, phone: str) -> None:
+        canonical = normalize_phone(phone)
+        if canonical is None:
+            return
+        current = self.by_id.get(user_id)
+        if current is None:
+            return
+        # last_action عمداً در replace نیست تا موضوع خوش‌آمد سر جایش بماند.
+        self.by_id[user_id] = replace(current, phone=canonical)
+
+    async def record_event(
+        self,
+        user_id: int,
+        kind: str,
+        created_at: str,
+        detail: str | None = None,
+    ) -> None:
+        prepared = prepare_event(user_id, kind, created_at, detail)
+        if prepared is None:
+            return
+        event_user, event_kind, event_at, event_detail = prepared
+        self.events.append(
+            MemoryEvent(
+                user_id=event_user,
+                kind=event_kind,
+                created_at=event_at,
+                detail=event_detail,
+            )
+        )
+
+    async def stats_between(self, start_iso: str, end_iso: str) -> StatsSnapshot:
+        # همان مقایسهٔ متنی SQL: ابتدا شامل است و انتها نه.
+        profiles = list(self.by_id.values())
+        active = sum(1 for row in profiles if start_iso <= row.last_seen_at < end_iso)
+        fresh = sum(1 for row in profiles if start_iso <= row.first_seen_at < end_iso)
+        counts = {kind: 0 for kind in EVENT_KINDS}
+        faq_buckets: dict[str, int] = {}
+        for event in self.events:
+            if not (start_iso <= event.created_at < end_iso):
+                continue
+            if event.kind in counts:
+                counts[event.kind] += 1
+            if event.kind == "faq" and event.detail:
+                faq_buckets[event.detail] = faq_buckets.get(event.detail, 0) + 1
+        top = sorted(faq_buckets.items(), key=lambda item: (-item[1], item[0]))[:5]
+        return StatsSnapshot(
+            active_users=active,
+            new_users=fresh,
+            counts=counts,
+            top_faq=top,
+            events_ready=True,
+        )
 
     async def list_recent(self, limit: int = RECENT_USER_LIMIT) -> list[UserProfile]:
         ordered = sorted(
@@ -330,6 +452,7 @@ def _profile_from_row(row: dict) -> UserProfile | None:
         last_seen_at=str(row.get("last_seen_at") or ""),
         message_count=_coerce_count(row.get("message_count")),
         last_action=_known_action(row.get("last_action")),
+        phone=_optional_text(row.get("phone"), 20),
     )
 
 
@@ -358,14 +481,23 @@ class D1UserStore:
         await statement.run()
 
     async def get(self, user_id: int) -> UserProfile | None:
-        try:
-            rows = await self._fetch(GET_USER_SQL, int(user_id))
-        except Exception:
-            # ستون last_action هنوز نیست. نام و شمارنده را از جدول قبلی می‌خوانیم.
-            rows = await self._fetch(GET_USER_SQL_LEGACY, int(user_id))
-        if not rows:
-            return None
-        return _profile_from_row(rows[0])
+        # اول ستون‌های تازه‌تر. اگر مهاجرت نرفته باشد SQLite خطا می‌دهد و شکل قبلی را می‌خوانیم.
+        # خطای شبکه هم به شکل بعدی می‌رسد؛ اگر هر سه شکست بخورند همان خطا را بالا می‌دهیم
+        # تا گفتگو آن را ببلعد و خوش‌آمد عمومی بماند.
+        queries = (GET_USER_SQL, GET_USER_SQL_NO_PHONE, GET_USER_SQL_LEGACY)
+        last_error: Exception | None = None
+        for sql in queries:
+            try:
+                rows = await self._query(sql, int(user_id))
+            except Exception as exc:
+                last_error = exc
+                continue
+            if not rows:
+                return None
+            return _profile_from_row(rows[0])
+        if last_error is not None:
+            raise last_error
+        return None
 
     async def set_last_action(self, user_id: int, action: str) -> None:
         if action not in LAST_ACTIONS:
@@ -373,8 +505,63 @@ class D1UserStore:
         statement = self.db.prepare(SET_LAST_ACTION_SQL).bind(action, int(user_id))  # type: ignore[attr-defined]
         await statement.run()
 
-    async def _fetch(self, sql: str, user_id: int) -> list[dict]:
-        statement = self.db.prepare(sql).bind(user_id)  # type: ignore[attr-defined]
+    async def set_phone(self, user_id: int, phone: str) -> None:
+        canonical = normalize_phone(phone)
+        if canonical is None:
+            return
+        # last_action در این UPDATE نیست تا موضوع خوش‌آمد سر جایش بماند.
+        statement = self.db.prepare(SET_PHONE_SQL).bind(canonical, int(user_id))  # type: ignore[attr-defined]
+        await statement.run()
+
+    async def record_event(
+        self,
+        user_id: int,
+        kind: str,
+        created_at: str,
+        detail: str | None = None,
+    ) -> None:
+        prepared = prepare_event(user_id, kind, created_at, detail)
+        if prepared is None:
+            return
+        event_user, event_kind, event_at, event_detail = prepared
+        statement = self.db.prepare(INSERT_EVENT_SQL).bind(  # type: ignore[attr-defined]
+            event_user,
+            event_kind,
+            event_detail,
+            event_at,
+        )
+        await statement.run()
+
+    async def stats_between(self, start_iso: str, end_iso: str) -> StatsSnapshot:
+        active_rows = await self._query(COUNT_ACTIVE_SQL, start_iso, end_iso)
+        new_rows = await self._query(COUNT_NEW_SQL, start_iso, end_iso)
+        counts = {kind: 0 for kind in EVENT_KINDS}
+        top: list[tuple[str, int]] = []
+        events_ready = True
+        try:
+            # جدول events ممکن است هنوز ساخته نشده باشد. شمارش کاربران را دور نمی‌ریزیم.
+            for row in await self._query(COUNT_KINDS_SQL, start_iso, end_iso):
+                kind = row.get("kind")
+                if isinstance(kind, str) and kind in counts:
+                    counts[kind] = _coerce_count(row.get("n"))
+            for row in await self._query(TOP_FAQ_SQL, start_iso, end_iso):
+                detail = row.get("detail")
+                if isinstance(detail, str) and detail.strip():
+                    top.append((detail.strip(), _coerce_count(row.get("n"))))
+        except Exception:
+            events_ready = False
+            counts = {kind: 0 for kind in EVENT_KINDS}
+            top = []
+        return StatsSnapshot(
+            active_users=_count_value(active_rows),
+            new_users=_count_value(new_rows),
+            counts=counts,
+            top_faq=top,
+            events_ready=events_ready,
+        )
+
+    async def _query(self, sql: str, *params: object) -> list[dict]:
+        statement = self.db.prepare(sql).bind(*params)  # type: ignore[attr-defined]
         result = await statement.all()
         return _result_rows(result)
 

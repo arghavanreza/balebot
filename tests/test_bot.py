@@ -194,10 +194,22 @@ def test_excel_upload_goes_to_admin_as_text_and_user_is_acknowledged():
         assert "SHOULD_NOT_APPEAR" not in body
         assert "@ali" in sent["caption"]
         assert USER in sent["caption"]
-        assert all(str(message["chat_id"]) == USER for message in client.messages)
-        assert "مدیر" in client.messages[-1]["text"]
+        assert "تهران" in sent["caption"]
+        user_messages = [message for message in client.messages if str(message["chat_id"]) == USER]
+        admin_messages = [message for message in client.messages if str(message["chat_id"]) == ADMIN]
+        assert user_messages
+        assert "مدیر" in user_messages[-1]["text"]
         # The converted text is not echoed back to the sender.
-        assert "name\tamount" not in client.messages[-1]["text"]
+        assert "name\tamount" not in user_messages[-1]["text"]
+        assert admin_messages
+        summary = admin_messages[-1]["text"]
+        assert "خلاصه" in summary
+        assert USER in summary
+        assert "علی" in summary
+        assert "@ali" in summary
+        assert "ثبت نشده" in summary
+        assert "تهران" in summary
+        assert "سطر" in summary
 
     _run(scenario())
 
@@ -340,7 +352,9 @@ def test_admin_users_command_and_failures_do_not_break_chat():
                 raise RuntimeError("no table")
 
         ctx.users = Boom()
-        await handle_update(_text(USER, "سلام", update_id=4), ctx)
+        # /start قبلی جریان شماره را باز کرده؛ اول آن را می‌بندیم تا متن عادی همان پاسخ قبلی را بگیرد.
+        await handle_update(_text(USER, "/cancel", update_id=4), ctx)
+        await handle_update(_text(USER, "سلام", update_id=8), ctx)
         assert "متوجه نشدم" in client.messages[-1]["text"]
         await handle_update(_text(ADMIN, "/users", update_id=5), ctx)
         assert "فهرست کاربران" in client.messages[-1]["text"]

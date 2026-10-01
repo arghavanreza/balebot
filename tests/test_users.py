@@ -7,8 +7,11 @@
 import asyncio
 
 from users import (
+    GET_USER_SQL,
     GET_USER_SQL_LEGACY,
+    GET_USER_SQL_NO_PHONE,
     SET_LAST_ACTION_SQL,
+    SET_PHONE_SQL,
     UPSERT_SQL,
     D1UserStore,
     MemoryUserStore,
@@ -42,6 +45,9 @@ def test_upsert_sql_keeps_first_seen_and_increments_count():
     assert "first_seen_at" not in update_clause
     assert "message_count = users.message_count + 1" in update_clause
     assert "ON CONFLICT(user_id)" in UPSERT_SQL
+    # شماره و آخرین کار ستون جدا هستند تا upsert بدون آن مهاجرت‌ها هم بماند.
+    assert "phone" not in UPSERT_SQL
+    assert "last_action" not in UPSERT_SQL
 
 
 def test_memory_store_preserves_first_seen_and_sorts_recent_first():
@@ -59,6 +65,49 @@ def test_memory_store_preserves_first_seen_and_sorts_recent_first():
         assert saved.is_admin is True
         assert [row.user_id for row in await store.list_recent(10)] == [7, 8]
         assert len(await store.list_recent(1)) == 1
+
+    _run(scenario())
+
+
+def test_phone_survives_touch_and_does_not_clear_last_action():
+    async def scenario():
+        store = MemoryUserStore()
+        await store.touch(_profile(7, "2026-10-01T00:00:00Z"))
+        await store.set_last_action(7, "excel")
+        await store.set_phone(7, "۰۹۱۲۱۲۳۴۵۶۷")
+        await store.set_phone(7, "02112345678")
+        await store.touch(_profile(7, "2026-10-01T02:00:00Z", username="ali2"))
+        saved = await store.get(7)
+        assert saved is not None
+        assert saved.phone == "+989121234567"
+        assert saved.last_action == "excel"
+        assert saved.message_count == 2
+        await store.set_phone(99, "09121234567")
+
+    _run(scenario())
+
+
+def test_memory_stats_use_tehran_window_and_ignore_unknown_events():
+    async def scenario():
+        from stats import tehran_day_bounds
+
+        store = MemoryUserStore()
+        await store.touch(_profile(7, "2026-10-01T10:00:00Z"))
+        await store.touch(_profile(8, "2026-09-30T10:00:00Z"))
+        await store.record_event(7, "excel", "2026-10-01T10:00:00Z")
+        await store.record_event(7, "faq", "2026-10-01T11:00:00Z", "  مدارک   افتتاح  ")
+        await store.record_event(7, "faq", "2026-10-01T12:00:00Z", "مدارک افتتاح")
+        await store.record_event(7, "faq", "2026-09-01T12:00:00Z", "قدیمی")
+        await store.record_event(7, "nope", "2026-10-01T12:00:00Z")
+        start, end, _label = tehran_day_bounds("2026-10-01T10:00:00Z")
+        snapshot = await store.stats_between(start, end)
+        assert snapshot.active_users == 1
+        assert snapshot.new_users == 1
+        assert snapshot.counts["excel"] == 1
+        assert snapshot.counts["faq"] == 2
+        assert snapshot.counts["sheba"] == 0
+        assert snapshot.top_faq == [("مدارک افتتاح", 2)]
+        assert all(event.kind != "nope" for event in store.events)
 
     _run(scenario())
 
@@ -229,6 +278,120 @@ def test_d1_get_falls_back_when_last_action_column_is_missing():
         selects = [sql for kind, sql, _params in db.log if kind == "all"]
         assert any("last_action" in sql for sql in selects)
         assert GET_USER_SQL_LEGACY in selects
+
+    _run(scenario())
+
+
+def test_d1_get_falls_back_when_only_phone_column_is_missing():
+    """مهاجرت ۰۰۰۳ نرفته باشد: آخرین کار می‌ماند و شماره خالی است."""
+
+    class _NoPhoneStmt(_Stmt):
+        async def all(self):
+            self.log.append(("all", self.sql, self.params))
+            if "phone" in self.sql:
+                raise RuntimeError("no such column: phone")
+            return _JsResult(
+                {
+                    "success": True,
+                    "results": [
+                        {
+                            "user_id": 7,
+                            "username": None,
+                            "first_name": "علی",
+                            "last_name": "رضایی",
+                            "language_code": "fa",
+                            "is_admin": 0,
+                            "first_seen_at": "2026-10-01T00:00:00Z",
+                            "last_seen_at": "2026-10-01T00:00:00Z",
+                            "message_count": 2,
+                            "last_action": "sheba",
+                        }
+                    ],
+                }
+            )
+
+    class _NoPhoneDB(_DB):
+        def prepare(self, sql: str) -> _NoPhoneStmt:
+            return _NoPhoneStmt(self.log, sql, self.rows)
+
+    async def scenario():
+        db = _NoPhoneDB([])
+        profile = await D1UserStore(db).get(7)
+        assert profile is not None
+        assert profile.last_action == "sheba"
+        assert profile.phone is None
+        assert profile.last_name == "رضایی"
+        selects = [sql for kind, sql, _params in db.log if kind == "all"]
+        assert GET_USER_SQL in selects
+        assert GET_USER_SQL_NO_PHONE in selects
+
+    _run(scenario())
+
+
+def test_d1_phone_and_event_statements_are_bound():
+    async def scenario():
+        from stats import COUNT_ACTIVE_SQL, INSERT_EVENT_SQL
+
+        db = _DB([])
+        store = D1UserStore(db)
+        await store.set_phone(7, "+98 912 123 4567")
+        await store.set_phone(7, "نه")
+        await store.record_event(7, "faq", "2026-10-01T10:00:00Z", "سقف انتقال")
+        await store.record_event(7, "other", "2026-10-01T10:00:00Z")
+        assert ("run", SET_PHONE_SQL, ("+989121234567", 7)) in db.log
+        assert ("run", INSERT_EVENT_SQL, (7, "faq", "سقف انتقال", "2026-10-01T10:00:00Z")) in db.log
+        assert all(params[1] != "other" for kind, _sql, params in db.log if kind == "run" and len(params) == 4)
+
+        class _StatsDB(_DB):
+            def prepare(self, sql: str):
+                rows = []
+                if "COUNT(*)" in sql and "users" in sql:
+                    rows = [{"n": 3}]
+                elif "GROUP BY kind" in sql:
+                    rows = [{"kind": "excel", "n": 2}]
+                elif "GROUP BY detail" in sql:
+                    rows = [{"detail": "سقف انتقال", "n": 4}]
+                return _Stmt(self.log, sql, rows)
+
+        stats_db = _StatsDB([])
+        snapshot = await D1UserStore(stats_db).stats_between(
+            "2026-09-30T20:30:00Z",
+            "2026-10-01T20:30:00Z",
+        )
+        assert snapshot.active_users == 3
+        assert snapshot.new_users == 3
+        assert snapshot.counts["excel"] == 2
+        assert snapshot.counts["sample"] == 0
+        assert snapshot.top_faq == [("سقف انتقال", 4)]
+        assert snapshot.events_ready is True
+        assert any(sql == COUNT_ACTIVE_SQL for _kind, sql, _params in stats_db.log)
+
+    _run(scenario())
+
+
+def test_d1_stats_keeps_user_counts_when_events_table_is_missing():
+    """مهاجرت ۰۰۰۴ نرفته باشد: کاربران امروز می‌مانند و رویدادها «آماده نیست» می‌شوند."""
+
+    class _NoEventsStmt(_Stmt):
+        async def all(self):
+            self.log.append(("all", self.sql, self.params))
+            if "events" in self.sql:
+                raise RuntimeError("no such table: events")
+            return _JsResult({"success": True, "results": [{"n": 5}]})
+
+    class _NoEventsDB(_DB):
+        def prepare(self, sql: str) -> _NoEventsStmt:
+            return _NoEventsStmt(self.log, sql, self.rows)
+
+    async def scenario():
+        snapshot = await D1UserStore(_NoEventsDB([])).stats_between(
+            "2026-09-30T20:30:00Z",
+            "2026-10-01T20:30:00Z",
+        )
+        assert snapshot.active_users == 5
+        assert snapshot.new_users == 5
+        assert snapshot.events_ready is False
+        assert snapshot.counts["excel"] == 0
 
     _run(scenario())
 

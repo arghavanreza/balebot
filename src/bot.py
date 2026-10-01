@@ -5,7 +5,8 @@
 
 کارهایی که این‌جا انجام می‌شود: منوی کاربر و مدیر، نمونهٔ اکسل، اعتبارسنجی شبا،
 پرسش‌های متداول شعبه، ویرایش متن، تبدیل فایل اکسل و فرستادن نتیجه فقط برای مدیر،
-ثبت کاربر در D1، و خوش‌آمد با نام اگر پایگاه در دسترس باشد.
+ثبت کاربر در D1، خوش‌آمد با نام اگر پایگاه در دسترس باشد، گرفتن شمارهٔ موبایل
+بعد از /start، و آمار روزانهٔ /stats برای مدیر.
 """
 
 from __future__ import annotations
@@ -29,8 +30,10 @@ from faq import (
     match_faq_item,
     parse_faq_admin_input,
 )
+from phone import normalize_phone
 from sample_loader import XLSX_MIME
 from state import StateRepository, UpdateDedupe
+from stats import STATS_DB_UNAVAILABLE, STATS_FAILED, format_stats, format_tehran_stamp, tehran_day_bounds
 from texts import (
     DEFAULT_TEXTS,
     KEY_HELP,
@@ -137,6 +140,23 @@ def admin_keyboard(texts: dict[str, str]) -> dict:
             [texts["btn_sample"]],
             [texts["btn_sheba"]],
             [texts["btn_faq"]],
+        ]
+    }
+
+
+def phone_keyboard(texts: dict[str, str]) -> dict:
+    """کیبورد درخواست شماره، بعد از خوش‌آمد مشتری.
+
+    request_contact فیلد رسمی دکمهٔ کیبورد بله است. با زدنش، خود بله شمارهٔ کاربر را
+    به صورت پیام contact می‌فرستد و بازو لازم نیست شماره را از جای دیگری بخواند.
+    ردیف‌های منو هم هستند تا بدون دادن شماره بشود نمونه، شبا یا پرسش‌ها را باز کرد.
+    """
+    menu = user_keyboard(texts)["keyboard"]
+    return {
+        "keyboard": [
+            [{"text": texts["btn_share_phone"], "request_contact": True}],
+            *menu,
+            [texts["btn_cancel"]],
         ]
     }
 
@@ -271,6 +291,49 @@ def _line_count(text: str) -> int:
     return text.count("\n") + (0 if text.endswith("\n") else 1)
 
 
+def _person_field(user: dict, profile: UserProfile | None, key: str) -> str:
+    """نام را اول از همین پیام بله می‌گیرد و اگر نبود از پروندهٔ D1."""
+    raw = user.get(key) if isinstance(user, dict) else None
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    if profile is not None:
+        stored = getattr(profile, key, None)
+        if isinstance(stored, str) and stored.strip():
+            return stored.strip()
+    return "—"
+
+
+def _excel_notice_fields(
+    user: dict,
+    user_id: str,
+    filename: str,
+    converted: str,
+    seen_at: str,
+    profile: UserProfile | None,
+) -> dict[str, str]:
+    """همهٔ جای‌نگهدارهای خلاصه و توضیح فایل. شماره فقط از D1 می‌آید، نه از حدس."""
+    username = user.get("username") if isinstance(user, dict) else None
+    if not (isinstance(username, str) and username.strip()) and profile is not None:
+        username = profile.username
+    if isinstance(username, str) and username.strip():
+        shown_username = "@" + username.strip().lstrip("@")
+    else:
+        shown_username = "ندارد"
+    phone = profile.phone if profile is not None and profile.phone else "ثبت نشده"
+    return {
+        "user_label": _user_label(user),
+        "user_id": user_id,
+        "filename": filename or "upload.xlsx",
+        "rows": str(_line_count(converted)),
+        "chars": str(len(converted)),
+        "timestamp": format_tehran_stamp(seen_at),
+        "first_name": _person_field(user, profile, "first_name"),
+        "last_name": _person_field(user, profile, "last_name"),
+        "username": shown_username,
+        "phone": phone,
+    }
+
+
 def _ids_match(user_id: object, admin_id: str) -> bool:
     """مدیر فقط کسی است که شناسه‌اش دقیقاً برابر ADMIN_ID باشد."""
     admin = (admin_id or "").strip()
@@ -324,6 +387,105 @@ async def _load_profile(ctx: BotContext, user_id: str) -> UserProfile | None:
     if not isinstance(profile, UserProfile):
         return None
     return profile
+
+
+async def _record_event(
+    ctx: BotContext,
+    user_id: str,
+    kind: str,
+    detail: str | None = None,
+) -> None:
+    """یک رویداد آمار می‌نویسد. نبودن جدول یا پایگاه، جواب بازو را نمی‌شکند."""
+    if ctx.users is None:
+        return
+    recorder = getattr(ctx.users, "record_event", None)
+    if not callable(recorder):
+        return
+    try:
+        numeric = int(user_id)
+    except (TypeError, ValueError):
+        return
+    try:
+        await recorder(numeric, kind, ctx.clock(), detail)
+    except Exception as exc:
+        print("event record failed:", type(exc).__name__)
+
+
+async def _maybe_ask_phone(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+) -> None:
+    """بعد از خوش‌آمد، اگر شماره در پرونده نباشد آن را می‌پرسد.
+
+    مدیر پرسیده نمی‌شود تا کیبورد پنل با دکمهٔ مخاطب عوض نشود.
+    اگر پایگاه نباشد یا خواندن پرونده خطا بدهد، چیزی پرسیده نمی‌شود.
+    """
+    if is_admin or ctx.users is None:
+        return
+    if not callable(getattr(ctx.users, "set_phone", None)):
+        return
+    profile = await _load_profile(ctx, user_id)
+    if profile is None or profile.phone:
+        return
+    await ctx.states.set(user_id, {"flow": "phone"})
+    await reply(texts["phone_prompt"], phone_keyboard(texts))
+
+
+async def _save_phone(
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+    raw_phone: str,
+) -> None:
+    """شمارهٔ معتبر را در D1 می‌نویسد و جریان را می‌بندد. last_action این‌جا عوض نمی‌شود."""
+    canonical = normalize_phone(raw_phone)
+    markup = menu_keyboard(texts, is_admin)
+    if canonical is None:
+        await reply(texts["phone_invalid"], phone_keyboard(texts) if not is_admin else markup)
+        return
+    if ctx.users is None or not callable(getattr(ctx.users, "set_phone", None)):
+        await ctx.states.clear(user_id)
+        await reply(texts["phone_store_failed"], markup)
+        return
+    try:
+        await ctx.users.set_phone(int(user_id), canonical)  # type: ignore[attr-defined]
+    except Exception as exc:
+        print("phone save failed:", type(exc).__name__)
+        await reply(texts["phone_store_failed"], phone_keyboard(texts) if not is_admin else markup)
+        return
+    await ctx.states.clear(user_id)
+    await reply(render(texts["phone_saved"], phone=canonical), markup)
+
+
+def _contact_phone(contact: dict) -> str | None:
+    """شماره را از شیء contact بله برمی‌دارد. عدد و رشته هر دو پذیرفته می‌شوند."""
+    number = contact.get("phone_number")
+    if isinstance(number, bool) or number is None:
+        return None
+    if isinstance(number, int):
+        return str(number)
+    if isinstance(number, str) and number.strip():
+        return number
+    return None
+
+
+def _contact_is_own(contact: dict, user_id: str) -> bool:
+    """اگر بله user_id مخاطب را داده باشد باید با فرستنده یکی باشد.
+
+    نبودن این فیلد را رد نمی‌کنیم: بعضی کلاینت‌ها فقط phone_number می‌فرستند.
+    ناهماهنگی یعنی کاربر مخاطب شخص دیگری را فرستاده و نباید در پرونده‌اش بنشیند.
+    """
+    owner = contact.get("user_id")
+    if owner is None:
+        return True
+    if isinstance(owner, bool):
+        return False
+    return str(owner) == str(user_id)
 
 
 async def _note_action(ctx: BotContext, user_id: str, action: str) -> None:
@@ -423,6 +585,12 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         )
         return
 
+    # پیام contact متن ندارد. قبل از رد کردن پیام بی‌متن، شماره را برمی‌داریم.
+    contact = message.get("contact")
+    if isinstance(contact, dict):
+        await _handle_contact(contact, ctx, texts, reply, user_id, is_admin)
+        return
+
     raw_text = message.get("text")
     if not isinstance(raw_text, str) or not raw_text.strip():
         return
@@ -432,6 +600,7 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
         await ctx.states.clear(user_id)
         print(f"start user_id={user_id} admin={is_admin}")
         await show_menu(personal=True)
+        await _maybe_ask_phone(ctx, texts, reply, user_id, is_admin)
         return
     if command == "/cancel":
         await ctx.states.clear(user_id)
@@ -448,6 +617,13 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
             await reply(texts["not_admin"], menu_keyboard(texts, is_admin))
             return
         await _send_user_list(ctx, reply, menu_keyboard(texts, is_admin))
+        return
+    if command == "/stats":
+        # مثل /users دستور است نه دکمه، و فقط ADMIN_ID آن را می‌بیند.
+        if not is_admin:
+            await reply(texts["not_admin"], menu_keyboard(texts, is_admin))
+            return
+        await _send_stats(ctx, reply, menu_keyboard(texts, is_admin))
         return
     if command:
         await reply(texts["unknown_text"], menu_keyboard(texts, is_admin))
@@ -492,6 +668,10 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     action = match_button(raw_text, texts)
     if action in {"back", "cancel"}:
         await ctx.states.clear(user_id)
+        if action == "cancel" and flow == "phone":
+            # انصراف از شماره، منوی خوش‌آمد را دوباره تکرار نمی‌کند.
+            await reply(texts["phone_skipped"], menu_keyboard(texts, is_admin))
+            return
         if action == "cancel":
             await reply(texts["cancelled"])
         await show_menu()
@@ -499,11 +679,12 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if action == "sample":
         await ctx.states.clear(user_id)
         await _note_action(ctx, user_id, "sample")
-        await _send_sample(ctx, texts, reply, chat_id, is_admin)
+        await _send_sample(ctx, texts, reply, chat_id, is_admin, user_id)
         return
     if action == "sheba":
         await ctx.states.set(user_id, {"flow": "sheba"})
         await _note_action(ctx, user_id, "sheba")
+        await _record_event(ctx, user_id, "sheba")
         await reply(texts["sheba_prompt"], cancel_keyboard(texts))
         return
     if action in {"faq", "faq_back"}:
@@ -564,6 +745,11 @@ async def _handle_message(message: dict, ctx: BotContext) -> None:
     if await _open_faq_label(raw_text, ctx, texts, reply, user_id):
         return
 
+    # شماره فقط وقتی جریان phone باز است خوانده می‌شود تا متن عادی اشتباهاً ذخیره نشود.
+    if flow == "phone":
+        await _save_phone(ctx, texts, reply, user_id, is_admin, raw_text)
+        return
+
     # نه دستور بود، نه دکمه، نه فایل. راهنمای کوتاه می‌فرستیم و منو را دوباره نشان می‌دهیم.
     await reply(texts["unknown_text"], menu_keyboard(texts, is_admin))
 
@@ -584,6 +770,49 @@ async def _send_user_list(
         await reply(USERS_LIST_FAILED, markup)
         return
     await reply(clip(format_recent_users(rows), 3500), markup)
+
+
+async def _send_stats(
+    ctx: BotContext,
+    reply: Callable[..., Awaitable[None]],
+    markup: dict,
+) -> None:
+    """جواب /stats. نبودن پایگاه یا خطای خواندن، گفتگو را خراب نمی‌کند.
+
+    امروز یعنی نیمه‌شب تا نیمه‌شب بعد به وقت تهران. تعریف دقیق داخل متن جواب است.
+    """
+    if ctx.users is None or not callable(getattr(ctx.users, "stats_between", None)):
+        await reply(STATS_DB_UNAVAILABLE, markup)
+        return
+    try:
+        start, end, day_label = tehran_day_bounds(ctx.clock())
+        snapshot = await ctx.users.stats_between(start, end)  # type: ignore[attr-defined]
+    except Exception as exc:
+        print("stats failed:", type(exc).__name__)
+        await reply(STATS_FAILED, markup)
+        return
+    await reply(clip(format_stats(snapshot, day_label=day_label), 3500), markup)
+
+
+async def _handle_contact(
+    contact: dict,
+    ctx: BotContext,
+    texts: dict[str, str],
+    reply: Callable[..., Awaitable[None]],
+    user_id: str,
+    is_admin: bool,
+) -> None:
+    """پیام contact بله را به شمارهٔ پرونده تبدیل می‌کند."""
+    if not _contact_is_own(contact, user_id):
+        markup = phone_keyboard(texts) if not is_admin else menu_keyboard(texts, True)
+        await reply(texts["phone_not_own"], markup)
+        return
+    raw_phone = _contact_phone(contact)
+    if raw_phone is None:
+        markup = phone_keyboard(texts) if not is_admin else menu_keyboard(texts, True)
+        await reply(texts["phone_invalid"], markup)
+        return
+    await _save_phone(ctx, texts, reply, user_id, is_admin, raw_phone)
 
 
 async def _save_text(
@@ -644,6 +873,7 @@ async def _send_sample(
     reply: Callable[..., Awaitable[None]],
     chat_id: object,
     is_admin: bool,
+    user_id: str,
 ) -> None:
     """فایل نمونه را برای خود همان چت می‌فرستد، نه برای مدیر."""
     try:
@@ -663,6 +893,8 @@ async def _send_sample(
         mime=XLSX_MIME,
         reply_markup=menu_keyboard(texts, is_admin),
     )
+    # فقط ارسال موفق شمرده می‌شود. فایل گم‌شده رویداد sample نمی‌سازد.
+    await _record_event(ctx, user_id, "sample")
 
 
 async def _handle_document(
@@ -677,6 +909,8 @@ async def _handle_document(
 ) -> None:
     """اکسل را به متن تبدیل می‌کند و فایل متنی را فقط به ADMIN_ID می‌فرستد.
 
+    پیش از فایل، یک خلاصهٔ جدا (شناسه، زمان تهران، نام، موبایل، تعداد سطر) هم می‌رود.
+    اگر خود خلاصه ارسال نشود، فایل متنی همچنان فرستاده می‌شود.
     فرستنده یک تأیید کوتاه می‌گیرد. اگر نوع فایل غلط باشد یا دانلود بشکند،
     مدیر چیزی دریافت نمی‌کند.
     """
@@ -717,13 +951,24 @@ async def _handle_document(
         return
 
     # متن تبدیل‌شده برای خود فرستنده برنمی‌گردد؛ فقط مدیر فایل .txt را می‌گیرد.
-    caption = render(
-        texts["excel_admin_caption"],
-        user_label=_user_label(user),
-        user_id=user_id,
-        filename=name or "upload.xlsx",
-        rows=_line_count(converted),
+    # شماره از پروندهٔ D1 است. اگر پایگاه نباشد یا هنوز نپرسیده باشیم، «ثبت نشده» می‌ماند.
+    profile = await _load_profile(ctx, user_id)
+    fields = _excel_notice_fields(
+        user,
+        user_id,
+        name or "upload.xlsx",
+        converted,
+        ctx.clock(),
+        profile,
     )
+    summary = render(texts.get("excel_admin_summary", ""), **fields).strip()
+    if summary:
+        try:
+            # خلاصه کیبورد نمی‌فرستد تا منوی مدیر، اگر وسط ویرایش باشد، جابه‌جا نشود.
+            await ctx.client.send_message(admin_id, clip(summary, 3500))  # type: ignore[attr-defined]
+        except Exception as exc:
+            print("excel summary failed:", type(exc).__name__)
+    caption = render(texts["excel_admin_caption"], **fields)
     try:
         await ctx.client.send_document(  # type: ignore[attr-defined]
             admin_id,
@@ -738,6 +983,8 @@ async def _handle_document(
         await reply(texts["excel_deliver_failed"], markup)
         return
 
+    # رویداد را بعد از رسیدن فایل می‌نویسیم تا ارسال ناموفق در آمار امروز نیاید.
+    await _record_event(ctx, user_id, "excel")
     await reply(texts["excel_ack"], markup)
 
 
@@ -786,6 +1033,8 @@ async def _handle_faq_choice(
         await reply(texts["faq_bad_choice"], _faq_markup(texts, items))
         return
     await _note_action(ctx, user_id, "faq")
+    # هر باز شدن پاسخ یک رویداد faq است. detail متن پرسش است تا /stats پرتکرار را بگوید.
+    await _record_event(ctx, user_id, "faq", found.question)
     await reply(format_faq_answer(found), _faq_markup(texts, items))
 
 
@@ -803,6 +1052,7 @@ async def _open_faq_label(
         return False
     await ctx.states.set(user_id, {"flow": "faq"})
     await _note_action(ctx, user_id, "faq")
+    await _record_event(ctx, user_id, "faq", found.question)
     await reply(format_faq_answer(found), _faq_markup(texts, items))
     return True
 

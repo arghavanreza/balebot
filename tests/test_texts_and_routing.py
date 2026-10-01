@@ -58,6 +58,13 @@ def test_previous_default_labels_upgrade_and_custom_text_stays():
                 "welcome": "متن خود مدیر",
                 "btn_sample": "دریافت سمپل اکسل",
                 "btn_sheba": "بررسی شبا",
+                "excel_admin_caption": (
+                    "فایل تبدیل‌شده\n"
+                    "کاربر: {user_label}\n"
+                    "شناسه: {user_id}\n"
+                    "نام فایل: {filename}\n"
+                    "تعداد سطر: {rows}"
+                ),
             },
             ensure_ascii=False,
         )
@@ -65,6 +72,8 @@ def test_previous_default_labels_upgrade_and_custom_text_stays():
         assert snap["welcome"] == "متن خود مدیر"
         assert snap["btn_sample"] == "نمونه فایل برای واریز حقوق"
         assert snap["btn_sheba"] == "اعتبارسنجی شبا"
+        assert "{phone}" in snap["excel_admin_caption"]
+        assert "موبایل" in snap["excel_admin_summary"]
         assert "تأیید" in snap["excel_upload_hint"]
         stored = json.loads(kv.values["bot_texts"])
         assert stored["welcome"] == "متن خود مدیر"
