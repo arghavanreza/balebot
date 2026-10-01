@@ -16,7 +16,9 @@ Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customer
 - دکمهٔ «پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
 - اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها و پرسش‌ها از همان‌جا قابل ویرایش‌اند.
 - `/start` اگر پایگاه کاربران در دسترس باشد، بار اول با نام سلام می‌کند و بار بعد «خوش برگشتی» می‌گوید. اگر D1 نباشد همان خوش‌آمد عمومی است.
-- هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند.
+- اگر مشتری هنوز شماره نداده باشد، بعد از خوش‌آمد شمارهٔ موبایل پرسیده می‌شود (دکمهٔ `request_contact` بله، یا تایپ `09…` / `+98…`). شماره در ستون `users.phone` می‌ماند. اگر از قبل باشد، دوباره پرسیده نمی‌شود.
+- هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند و با `/stats` آمار امروز به وقت تهران را.
+- با هر فایل اکسل، علاوه بر خود فایل متنی، یک خلاصه برای مدیر می‌رود: شناسه، زمان تهران، نام، نام کاربری، موبایل (اگر ثبت شده باشد) و تعداد سطر.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
 قالب خروجی اکسل عمداً موقت است. نقطهٔ تغییر: تابع `convert_excel_to_text` در `src/excel_convert.py`.
@@ -90,9 +92,15 @@ uv run pywrangler deploy
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
 
-مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. بعد از گرفتن این نسخه، همان دستور مهاجرت را یک بار دیگر بزنید؛ فایل‌های قبلی دوباره اجرا نمی‌شوند.
+مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. ثبت شمارهٔ موبایل این ستون را عوض نمی‌کند.
 
-دستور مدیر `/users` حداکثر ۲۰ نفر را به ترتیب آخرین بازدید نشان می‌دهد. کاربر عادی همان پاسخ «فقط برای مدیر» را می‌گیرد. این فهرست دکمهٔ کیبورد نیست.
+مهاجرت `migrations/0003_phone.sql` ستون `phone` را اضافه می‌کند (`TEXT`، تهی مجاز). مقدار ذخیره‌شده به شکل `+989` و ده رقم است. تا وقتی این ستون نباشد، خوش‌آمد و بقیهٔ بازو کار می‌کنند و فقط ذخیرهٔ شماره خطا می‌دهد.
+
+مهاجرت `migrations/0004_events.sql` جدول `events` را می‌سازد: `user_id`، `kind` (`excel` / `faq` / `sheba` / `sample`)، `detail` (برای پرسش، متن کوتاه سؤال) و `created_at` به وقت UTC. دستور `/stats` از همین جدول و از `first_seen_at` / `last_seen_at` می‌خواند. اگر جدول نباشد، شمارش کاربران امروز همچنان می‌آید و شمارش رویدادها یک جملهٔ راهنما است.
+
+بعد از گرفتن این نسخه، همان دستور مهاجرت را یک بار دیگر بزنید؛ فایل‌های قبلی دوباره اجرا نمی‌شوند.
+
+دستور مدیر `/users` حداکثر ۲۰ نفر را به ترتیب آخرین بازدید نشان می‌دهد. `/stats` فقط برای مدیر است و امروز را به وقت تهران (UTC+03:30، بدون ساعت تابستانی) تعریف می‌کند: کاربر فعال یعنی `last_seen_at` در آن روز، کاربر تازه‌وارد یعنی `first_seen_at` در همان روز، و رویدادها با `created_at` در همان بازه. کاربر عادی همان پاسخ «فقط برای مدیر» را می‌گیرد. این دو دستور دکمهٔ کیبورد نیستند.
 
 ### ۴. Secrets
 
@@ -238,7 +246,9 @@ uv run pywrangler secret put ADMIN_ID
 | کلید | جای‌نگهدار |
 | --- | --- |
 | `sheba_valid` / `sheba_invalid` | `{sheba}` |
-| `excel_admin_caption` | `{user_label}` `{user_id}` `{filename}` `{rows}` |
+| `excel_admin_caption` | `{user_label}` `{user_id}` `{timestamp}` `{phone}` `{filename}` `{rows}` |
+| `excel_admin_summary` | `{user_id}` `{timestamp}` `{first_name}` `{last_name}` `{username}` `{phone}` `{rows}` `{chars}` `{filename}` |
+| `phone_saved` | `{phone}` |
 | `id_reply` | `{user_id}` |
 | `admin_value_prompt` | `{key}` `{current}` |
 | `admin_saved` | `{key}` |
@@ -300,6 +310,7 @@ uv run pywrangler secret put ADMIN_ID
 - اگر نام در پرونده نباشد: اولین بار همان `welcome`، و بازگشت `welcome_back_plain`
 - اگر D1 وصل نباشد یا `get` خطا بدهد: کلید `welcome`، و بازو خراب نمی‌شود
 - اگر فقط ستون `last_action` هنوز نباشد: خوش‌آمد با نام می‌ماند و موضوعی ساخته نمی‌شود
+- اگر مشتری مدیر نباشد و `phone` در پرونده خالی باشد، پیام بعدی شماره می‌خواهد. دکمهٔ اول `request_contact` بله است؛ تایپ `09…` یا `+98…` هم پذیرفته می‌شود. «انصراف» یا دکمه‌های منو گفتگو را بدون شماره ادامه می‌دهند. مدیر این پرسش را نمی‌بیند تا پنلش جابه‌جا نشود.
 
 جملهٔ فایل حقوق (`excel_upload_hint`) و راهنمای دکمه‌ها (`welcome_hint`) زیر هر دو نوع خوش‌آمد می‌آیند.
 
@@ -356,9 +367,10 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 
 | دستور یا دکمه | کار |
 | --- | --- |
-| `/start` | منوی کاربر یا مدیر |
+| `/start` | منوی کاربر یا مدیر؛ برای مشتریِ بدون شماره، درخواست موبایل هم می‌آید |
 | `/id` | نمایش شناسهٔ عددی |
 | `/users` | فقط مدیر: فهرست کاربران اخیر از D1 |
+| `/stats` | فقط مدیر: آمار امروز به وقت تهران |
 | `/cancel` | لغو جریان فعلی |
 | نمونه فایل برای واریز حقوق | ارسال نمونه برای خود کاربر |
 | اعتبارسنجی شبا | درخواست شبا؛ تا پاسخ معتبر یا انصراف در همین حالت می‌ماند |
@@ -391,7 +403,9 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 - Reply-keyboard button «پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
 - When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits customer-facing strings and FAQ entries at runtime (Workers KV, not a redeploy).
 - With D1 available, `/start` greets a first visit by `first_name` and a later visit with «خوش برگشتی», plus the last real action when one is stored. If D1 is down, the generic `welcome` text is used.
-- Every user who sends a message or callback is upserted into Cloudflare D1. The admin can list recent users with `/users`.
+- After that greeting, a customer with no stored mobile is asked for one. The keyboard uses Bale `request_contact`; typed `09…` / `+98…` is accepted too. The number is stored on `users.phone`. A return visit that already has a phone skips the question.
+- Every user who sends a message or callback is upserted into Cloudflare D1. The admin lists recent users with `/users` and today’s Tehran-time counts with `/stats`.
+- An Excel upload still delivers the `.txt` file to the admin, and also a summary message: user id, Tehran timestamp (with the UTC instant), first and last name, username, phone from D1, and row count.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
 The Excel mapping is explicitly temporary. Change `convert_excel_to_text(data: bytes) -> str` in `src/excel_convert.py`. There is a TODO in that file.
@@ -462,9 +476,15 @@ Local dev uses a separate SQLite file:
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
 
-`migrations/0002_last_action.sql` adds `users.last_action` (`sample`, `sheba`, `faq`, or `excel`) for the return greeting. Until that migration is applied, the bot still greets by name and does not invent a previous topic. Re-run `migrations apply` after pulling this version; already-applied files are skipped.
+`migrations/0002_last_action.sql` adds `users.last_action` (`sample`, `sheba`, `faq`, or `excel`) for the return greeting. Until that migration is applied, the bot still greets by name and does not invent a previous topic. Saving a phone number does not change `last_action`.
 
-`/users` is admin-only and lists up to 20 people, most recently seen first. It is a command, not a keyboard button.
+`migrations/0003_phone.sql` adds nullable `users.phone`. Stored values look like `+989` plus 10 digits. Until that column exists, chat still works and only the phone write fails soft.
+
+`migrations/0004_events.sql` creates `events` (`user_id`, `kind`, `detail`, `created_at` in UTC). Kinds are `excel` (text file delivered to the admin), `faq` (an answer was opened; `detail` is a short question), `sheba` (the check was started), and `sample` (the sample file was sent). `/stats` counts `users.last_seen_at` / `first_seen_at` and these rows inside the Tehran day. If the events table is missing, user counts still return and the event section says to apply the migration.
+
+Re-run `migrations apply` after pulling this version; already-applied files are skipped.
+
+`/users` is admin-only and lists up to 20 people, most recently seen first. `/stats` is admin-only. “Today” is midnight to next midnight in Asia/Tehran (fixed UTC+03:30, no DST): an active user has `last_seen_at` in that window, a new user has `first_seen_at` in that window, and events use `created_at` with the same bounds. Both commands are commands, not keyboard buttons. The comparison is plain text because the timestamps are fixed-width UTC ISO strings.
 
 ### 4. Secrets
 
@@ -567,7 +587,9 @@ Placeholders use `{token}`. An unknown name is left as written:
 | Key | Placeholders |
 | --- | --- |
 | `sheba_valid`, `sheba_invalid` | `{sheba}` |
-| `excel_admin_caption` | `{user_label}` `{user_id}` `{filename}` `{rows}` |
+| `excel_admin_caption` | `{user_label}` `{user_id}` `{timestamp}` `{phone}` `{filename}` `{rows}` |
+| `excel_admin_summary` | `{user_id}` `{timestamp}` `{first_name}` `{last_name}` `{username}` `{phone}` `{rows}` `{chars}` `{filename}` |
+| `phone_saved` | `{phone}` |
 | `id_reply` | `{user_id}` |
 | `admin_value_prompt` | `{key}` `{current}` |
 | `admin_saved` | `{key}` |
@@ -618,6 +640,7 @@ Only `/start`, and only for non-admins. Leaving another flow shows the ordinary 
 - No `first_name`: first visit uses `welcome`; a later visit uses `welcome_back_plain`
 - D1 missing or `get` failing: generic `welcome`, and the chat still works
 - If only the `last_action` column is missing, the name greeting still works and no topic is invented
+- If the sender is not the admin and `phone` is empty, the next message asks for a mobile number. The first button is Bale `request_contact`; typed `09…` or `+98…` is normalized lightly. «انصراف» or a menu button continues without a number. Admins are not asked, so the admin keyboard stays in place.
 
 `welcome_hint` and `excel_upload_hint` are appended under both greetings.
 
@@ -663,10 +686,11 @@ A failed check leaves the bot waiting for another number. A valid check, «ان�
 
 | Input | Result |
 | --- | --- |
-| `/start` | User menu, or admin menu when the id matches |
+| `/start` | User menu, or admin menu when the id matches. Customers without a phone are then asked for one |
 | `/id` | Replies with the numeric user id |
 | `/users` | Admin only: recent users from D1 |
-| `/cancel` | Cancels Sheba entry or text editing |
+| `/stats` | Admin only: today’s counts in Tehran time |
+| `/cancel` | Cancels Sheba entry, text editing, or the phone prompt |
 | Payroll sample button | `sendDocument` of `sample.xlsx` to that chat |
 | Sheba button | Asks for an IBAN |
 | FAQ button | Lists branch questions; a number or button shows the answer |
