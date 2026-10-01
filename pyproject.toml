@@ -1,7 +1,7 @@
 [project]
 name = "bale-excel-bot"
 version = "0.1.0"
-description = "Persian Bale bot on Cloudflare Python Workers: Excel to text for the admin, sample workbook, Sheba check, editable texts."
+description = "Persian Bale bot on Cloudflare Python Workers: payroll Excel to text for the admin, sample workbook, Sheba check, branch FAQ, editable texts."
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

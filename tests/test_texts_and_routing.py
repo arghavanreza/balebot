@@ -1,7 +1,9 @@
 """متن‌های KV، عمر وضعیت گفتگو، و قفل مسیر وب‌هوک."""
 
 import asyncio
+import json
 
+from bot import format_key_list
 from routing import setup_authorized, webhook_authorized
 from state import STATE_TTL_SECONDS, StateRepository, UpdateDedupe
 from storage import MemoryKV
@@ -44,6 +46,35 @@ def test_new_key_is_merged_into_an_older_document():
         assert set(TEXT_KEYS) <= set(snap)
 
     _run(scenario())
+
+
+def test_previous_default_labels_upgrade_and_custom_text_stays():
+    """برچسب نسخهٔ قبل اگر دست‌نخورده باشد با متن مشتری‌پسند عوض می‌شود."""
+
+    async def scenario():
+        kv = MemoryKV()
+        kv.values["bot_texts"] = json.dumps(
+            {
+                "welcome": "متن خود مدیر",
+                "btn_sample": "دریافت سمپل اکسل",
+                "btn_sheba": "بررسی شبا",
+            },
+            ensure_ascii=False,
+        )
+        snap = await TextRepository(kv).snapshot()
+        assert snap["welcome"] == "متن خود مدیر"
+        assert snap["btn_sample"] == "نمونه فایل برای واریز حقوق"
+        assert snap["btn_sheba"] == "اعتبارسنجی شبا"
+        assert "تأیید" in snap["excel_upload_hint"]
+        stored = json.loads(kv.values["bot_texts"])
+        assert stored["welcome"] == "متن خود مدیر"
+        assert stored["btn_sample"] == DEFAULT_TEXTS["btn_sample"]
+
+    _run(scenario())
+
+
+def test_admin_key_list_fits_in_one_message():
+    assert len(format_key_list(DEFAULT_TEXTS)) < 3500
 
 
 def test_state_ttl_and_dedupe():

@@ -1,5 +1,5 @@
 # بازوی بله — تبدیل اکسل / Bale Excel bot
-Persian Bale bot on a **Python Cloudflare Worker**. A customer sends an `.xlsx` file; the Worker turns the first sheet into a UTF-8 text file and sends that file to the admin (not back to the customer). The same bot can hand out a sample workbook and check an Iranian Sheba (IBAN). Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
+Persian Bale bot on a **Python Cloudflare Worker** for Bank Mehr branch customers. A customer sends an `.xlsx` payroll file; the Worker turns the first sheet into a UTF-8 text file and sends that file to the admin (not back to the customer). The same bot hands out a sample workbook, checks an Iranian Sheba (IBAN), and answers a short branch FAQ. Every customer-facing string is stored in Workers KV and can be edited from the admin menu.
 
 مستندات API بله: <https://docs.bale.ai/>
 
@@ -10,9 +10,12 @@ Persian Bale bot on a **Python Cloudflare Worker**. A customer sends an `.xlsx` 
 ### این بازو چه می‌کند
 
 - دریافت فایل `.xlsx`، تبدیل شیت اول به متن جداشده با تب، و ارسال همان فایل متنی برای `ADMIN_ID`.
-- دکمهٔ «دریافت سمپل اکسل»: ارسال `assets/sample.xlsx` برای خود کاربر.
-- دکمهٔ «بررسی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
-- اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها از همان‌جا قابل ویرایش‌اند.
+- دکمهٔ «نمونه فایل برای واریز حقوق»: ارسال `assets/sample.xlsx` برای خود کاربر.
+- پیش از آپلود، منو یک جمله نشان می‌دهد: چه فایل اکسلی بفرستند، اینکه خودشان تأیید می‌گیرند، و اینکه فایل متنی برای مدیر شعبه می‌رود. جمله در کلید `excel_upload_hint` است.
+- دکمهٔ «اعتبارسنجی شبا»: دریافت شماره شبا و پاسخ معتبر / نامعتبر (IR به‌علاوهٔ ۲۴ رقم، الگوریتم ISO 7064 mod-97).
+- دکمهٔ «پرسش‌های متداول»: چند پرسش شعبه. مشتری شماره یا دکمه را می‌زند و پاسخ را می‌بیند.
+- اگر شناسهٔ فرستنده با `ADMIN_ID` یکی باشد، منوی مدیر نشان داده می‌شود و متن‌ها و پرسش‌ها از همان‌جا قابل ویرایش‌اند.
+- `/start` اگر پایگاه کاربران در دسترس باشد، بار اول با نام سلام می‌کند و بار بعد «خوش برگشتی» می‌گوید. اگر D1 نباشد همان خوش‌آمد عمومی است.
 - هر کاربری که پیام یا callback بفرستد در پایگاه D1 ثبت یا به‌روز می‌شود. مدیر با `/users` تازه‌ترین‌ها را می‌بیند.
 - `GET /health` سلامت ورکر را برمی‌گرداند. `POST /webhook` آپدیت بله را می‌گیرد.
 
@@ -86,6 +89,8 @@ uv run pywrangler deploy
 ```bash
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
+
+مهاجرت `migrations/0002_last_action.sql` ستون `last_action` را اضافه می‌کند. این ستون فقط آخرین کار بازو است (`sample`، `sheba`، `faq`، `excel`) تا جملهٔ «خوش برگشتی» موضوع واقعی را بگوید. اگر هنوز اعمال نشده باشد، خوش‌آمد با نام کار می‌کند و موضوعی ساخته نمی‌شود. بعد از گرفتن این نسخه، همان دستور مهاجرت را یک بار دیگر بزنید؛ فایل‌های قبلی دوباره اجرا نمی‌شوند.
 
 دستور مدیر `/users` حداکثر ۲۰ نفر را به ترتیب آخرین بازدید نشان می‌دهد. کاربر عادی همان پاسخ «فقط برای مدیر» را می‌گیرد. این فهرست دکمهٔ کیبورد نیست.
 
@@ -201,7 +206,7 @@ uv run pywrangler secret put ADMIN_ID
 
 شناسه در لاگ ورکر هم هنگام `/start` و `/id` چاپ می‌شود: `uv run pywrangler tail`.
 
-بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد و برای بقیه خوش‌آمد و دو دکمهٔ کاربر را.
+بعد از این، `/start` برای آن شناسه منوی مدیر را نشان می‌دهد و برای بقیه خوش‌آمد و دکمه‌های کاربر (نمونهٔ حقوق، اعتبارسنجی شبا، پرسش‌های متداول) را.
 
 ### ۹. ویرایش متن‌ها (مدیر)
 
@@ -211,9 +216,24 @@ uv run pywrangler secret put ADMIN_ID
 4. متن جدید را در پیام بعدی بفرستید
 5. «انصراف»، «بازگشت»، `/cancel` یا `/start` جریان را قطع می‌کند
 
-کلیدها و متن پیش‌فرض در `src/texts.py` هستند. برچسب دکمه‌ها هم کلیدند (`btn_sample`، `btn_sheba`، `btn_edit`، `btn_back`، `btn_cancel`). بعد از ذخیره، کیبورد بعدی برچسب جدید را نشان می‌دهد. برچسب‌ها را تکراری نگذارید.
+کلیدها و متن پیش‌فرض در `src/texts.py` هستند. برچسب دکمه‌ها هم کلیدند (`btn_sample`، `btn_sheba`، `btn_faq`، `btn_faq_edit`، `btn_faq_back`، `btn_edit`، `btn_back`، `btn_cancel`). بعد از ذخیره، کیبورد بعدی برچسب جدید را نشان می‌دهد. برچسب‌ها را تکراری نگذارید.
 
-جای‌نگهدارها فقط به شکل `{name}` جایگزین می‌شوند:
+جملهٔ پیش از ارسال فایل حقوق کلید `excel_upload_hint` است. اگر در KV هنوز عین پیش‌فرض نسخهٔ قبل مانده باشد (مثلاً دکمهٔ «دریافت سمپل اکسل» یا «بررسی شبا»)، بار بعد با پیش‌فرض جدید عوض می‌شود. متنی که خودتان ذخیره کرده‌اید دست نمی‌خورد.
+
+| کلید خوش‌آمد | کی دیده می‌شود | جای‌نگهدار |
+| --- | --- | --- |
+| `welcome` | پایگاه کاربر نیست، یا نامی در پرونده نیست و اولین بازدید است | — |
+| `welcome_first` | اولین بازدید و `first_name` موجود است | `{name}` |
+| `welcome_back` | بازگشت، با نام، بدون آخرین کار | `{name}` |
+| `welcome_back_plain` | بازگشت، بدون نام و بدون آخرین کار | — |
+| `welcome_back_topic` | بازگشت، با نام و آخرین کار واقعی | `{name}` `{topic}` |
+| `welcome_back_topic_plain` | بازگشت، بدون نام، با آخرین کار | `{topic}` |
+| `topic_excel` | نام آخرین کار وقتی فایل اکسل فرستاده شده | — |
+| `excel_upload_hint` | ته منوی مشتری، پیش از آپلود | — |
+
+`{topic}` از روی برچسب همان کار ساخته می‌شود (`btn_sample`، `btn_sheba`، `btn_faq`، یا `topic_excel`). اگر آخرین کاری ثبت نشده باشد این جمله اصلاً ساخته نمی‌شود.
+
+جای‌نگهدارها فقط به شکل `{token}` جایگزین می‌شوند و نام ناشناس دست‌نخورده می‌ماند:
 
 | کلید | جای‌نگهدار |
 | --- | --- |
@@ -222,6 +242,66 @@ uv run pywrangler secret put ADMIN_ID
 | `id_reply` | `{user_id}` |
 | `admin_value_prompt` | `{key}` `{current}` |
 | `admin_saved` | `{key}` |
+| `welcome_first` / `welcome_back` | `{name}` |
+| `welcome_back_topic` | `{name}` `{topic}` |
+| `welcome_back_topic_plain` | `{topic}` |
+| `faq_full` | `{max}` |
+| `faq_ask_question` / `faq_ask_answer` | `{current}` |
+| `faq_admin_bad` | `{add}` `{delete}` |
+
+### ۹.۱ پرسش‌های متداول
+
+پرسش و پاسخ‌ها در کلید KV جداگانه‌ای به نام `bot_faq` هستند، نه داخل `bot_texts`. سند این شکل را دارد:
+
+```json
+{
+  "items": [
+    {"id": "open-account", "question": "متن پرسش", "answer": "متن پاسخ"}
+  ],
+  "hidden": ["hours"]
+}
+```
+
+`items` ترتیب نمایش است. `hidden` شناسهٔ پیش‌فرض‌هایی است که مدیر حذف کرده تا با استقرار بعدی دوباره برنگردند. پرسش تازه‌ای که فقط در کد اضافه شود و در `hidden` نباشد، ته فهرست قبلی اضافه می‌شود.
+
+از منوی مدیر، بدون استقرار مجدد:
+
+1. «ویرایش پرسش‌ها»
+2. شمارهٔ ردیف را بفرستید، بعد متن پرسش، بعد متن پاسخ
+3. `جدید` برای افزودن (حداکثر ۱۰ پرسش)
+4. `حذف ۲` یا `حذف۲` برای حذف همان ردیف
+5. «بازگشت»، «انصراف»، `/cancel` یا `/start` بیرون می‌آید
+
+کلمهٔ افزودن کلید `faq_cmd_add` است و پیشوند حذف کلید `faq_cmd_delete`. اگر این دو را عوض کنید، راهنمای `faq_admin_prompt` را هم با همان کلمه‌ها هم‌خوان کنید.
+
+شناسه‌های پیش‌فرض (متن‌ها نمونه‌اند و کارمزد و ساعت قطعی عمداً داخلشان ثابت نشده):
+
+| id | موضوع |
+| --- | --- |
+| `open-account` | مدارک افتتاح حساب |
+| `settlement` | زمان نشستن واریز حقوق |
+| `fee` | کارمزد |
+| `sheba-docs` | مدرک لازم برای شبا |
+| `hours` | ساعت کار شعبه |
+| `payroll-file` | نحوهٔ ارسال فایل حقوق |
+| `trace` | اگر مبلغ ننشست |
+| `limits` | سقف انتقال |
+
+مشتری در منو «پرسش‌های متداول» را می‌زند، شماره یا دکمهٔ پرسش را انتخاب می‌کند، و با «بازگشت به پرسش‌ها» یا «بازگشت» برمی‌گردد. بیرون از این فهرست، فرستادن عدد تنها اولین پاسخ را باز نمی‌کند.
+
+### ۹.۲ خوش‌آمد شخصی
+
+فقط روی `/start` و فقط برای غیرمدیر. بازگشت از یک جریان، منوی معمولی را نشان می‌دهد تا «خوش برگشتی» وسط کار تکرار نشود.
+
+- بار اول، اگر `first_name` در پرونده باشد: `welcome_first`
+- بار بعد: «خوش برگشتی» به‌همراه نام
+- اگر ستون `last_action` یکی از `sample` / `sheba` / `faq` / `excel` باشد، همان کار در جمله می‌آید
+- مقدار خالی یا ناشناس یعنی موضوعی گفته نمی‌شود
+- اگر نام در پرونده نباشد: اولین بار همان `welcome`، و بازگشت `welcome_back_plain`
+- اگر D1 وصل نباشد یا `get` خطا بدهد: کلید `welcome`، و بازو خراب نمی‌شود
+- اگر فقط ستون `last_action` هنوز نباشد: خوش‌آمد با نام می‌ماند و موضوعی ساخته نمی‌شود
+
+جملهٔ فایل حقوق (`excel_upload_hint`) و راهنمای دکمه‌ها (`welcome_hint`) زیر هر دو نوع خوش‌آمد می‌آیند.
 
 بله متن را مارک‌داون می‌بیند: ستاره و زیرخط اطرافشان فاصله می‌خواهند. اگر نمی‌خواهید بخشی از پیام بولد شود، `*` و `_` را در متن ویرایش‌شده بی‌دلیل نگذارید.
 
@@ -280,8 +360,9 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 | `/id` | نمایش شناسهٔ عددی |
 | `/users` | فقط مدیر: فهرست کاربران اخیر از D1 |
 | `/cancel` | لغو جریان فعلی |
-| دریافت سمپل اکسل | ارسال نمونه |
-| بررسی شبا | درخواست شبا؛ تا پاسخ معتبر یا انصراف در همین حالت می‌ماند |
+| نمونه فایل برای واریز حقوق | ارسال نمونه برای خود کاربر |
+| اعتبارسنجی شبا | درخواست شبا؛ تا پاسخ معتبر یا انصراف در همین حالت می‌ماند |
+| پرسش‌های متداول | فهرست پرسش شعبه؛ شماره یا دکمه پاسخ را باز می‌کند |
 | ارسال `.xlsx` | تبدیل و ارسال برای مدیر، بعد تأیید برای فرستنده |
 
 دانلود فایل از بله تا ۲۰ مگابایت است (`getFile`). فایل بزرگ‌تر رد می‌شود.
@@ -304,9 +385,12 @@ npx wrangler r2 object put bale-bot-files/sample.xlsx --file assets/sample.xlsx
 ### What it does
 
 - Accepts an `.xlsx` upload, converts the first sheet to tab-separated UTF-8 text, and sends that text file to `ADMIN_ID` with `sendDocument`. The sender only gets an acknowledgement.
-- Reply-keyboard button «دریافت سمپل اکسل» sends `assets/sample.xlsx` so customers can see the expected columns (`name`, `amount`, `sheba`).
-- Reply-keyboard button «بررسی شبا» asks for an Iranian IBAN and answers valid or invalid.
-- When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits every customer-facing string at runtime (Workers KV, not a redeploy).
+- Reply-keyboard button «نمونه فایل برای واریز حقوق» sends `assets/sample.xlsx` so customers can see the expected columns (`name`, `amount`, `sheba`).
+- Before an upload, the customer menu shows one sentence (`excel_upload_hint`): which `.xlsx` to send, that the sender gets an acknowledgement, and that the admin receives a text file.
+- Reply-keyboard button «اعتبارسنجی شبا» asks for an Iranian IBAN and answers valid or invalid.
+- Reply-keyboard button «پرسش‌های متداول» opens a short branch FAQ. A number or button shows the answer.
+- When the sender’s numeric id equals `ADMIN_ID`, `/start` shows an admin menu that edits customer-facing strings and FAQ entries at runtime (Workers KV, not a redeploy).
+- With D1 available, `/start` greets a first visit by `first_name` and a later visit with «خوش برگشتی», plus the last real action when one is stored. If D1 is down, the generic `welcome` text is used.
 - Every user who sends a message or callback is upserted into Cloudflare D1. The admin can list recent users with `/users`.
 - `GET /health` → `{"ok": true}`. `POST /webhook` is the Bale webhook.
 
@@ -377,6 +461,8 @@ Local dev uses a separate SQLite file:
 ```bash
 npx wrangler d1 migrations apply bale-bot-users --local
 ```
+
+`migrations/0002_last_action.sql` adds `users.last_action` (`sample`, `sheba`, `faq`, or `excel`) for the return greeting. Until that migration is applied, the bot still greets by name and does not invent a previous topic. Re-run `migrations apply` after pulling this version; already-applied files are skipped.
 
 `/users` is admin-only and lists up to 20 people, most recently seen first. It is a command, not a keyboard button.
 
@@ -464,15 +550,19 @@ Send `/id` to the bot after the webhook is connected. Put that number in `ADMIN_
 uv run pywrangler secret put ADMIN_ID
 ```
 
-`/start` and `/id` also print `user_id=...` in the Worker logs (`uv run pywrangler tail`). Until `ADMIN_ID` matches, nobody sees the admin menu; uploads and the two user buttons still work.
+`/start` and `/id` also print `user_id=...` in the Worker logs (`uv run pywrangler tail`). Until `ADMIN_ID` matches, nobody sees the admin menu; uploads and the customer buttons (sample payroll file, Sheba check, FAQ) still work.
 
 ### 9. Edit texts
 
 As the admin: `/start` → «ویرایش متن» → send a key number or name (for example `welcome`) → send the new text. «انصراف», «بازگشت», `/cancel`, and `/start` leave the flow.
 
-Button labels are keys too (`btn_sample`, `btn_sheba`, `btn_edit`, `btn_back`, `btn_cancel`). The next keyboard uses the saved labels. Keep those labels unique.
+Button labels are keys too (`btn_sample`, `btn_sheba`, `btn_faq`, `btn_faq_edit`, `btn_faq_back`, `btn_edit`, `btn_back`, `btn_cancel`). The next keyboard uses the saved labels. Keep those labels unique.
 
-`{name}` placeholders (anything else is left untouched):
+`excel_upload_hint` is the one sentence shown on the customer menu before an upload. If KV still holds an untouched previous default (for example the old «دریافت سمپل اکسل» or «بررسی شبا» labels), the next read replaces it with the new default. A value an admin actually saved is left as-is.
+
+Welcome keys: `welcome` (no database, or a first visit with no name), `welcome_first` (`{name}`), `welcome_back` (`{name}`), `welcome_back_plain`, `welcome_back_topic` (`{name}` `{topic}`), `welcome_back_topic_plain` (`{topic}`). `{topic}` is the current label of the stored action. An empty `last_action` does not mention a topic.
+
+Placeholders use `{token}`. An unknown name is left as written:
 
 | Key | Placeholders |
 | --- | --- |
@@ -481,6 +571,55 @@ Button labels are keys too (`btn_sample`, `btn_sheba`, `btn_edit`, `btn_back`, `
 | `id_reply` | `{user_id}` |
 | `admin_value_prompt` | `{key}` `{current}` |
 | `admin_saved` | `{key}` |
+| `welcome_first`, `welcome_back` | `{name}` |
+| `welcome_back_topic` | `{name}` `{topic}` |
+| `welcome_back_topic_plain` | `{topic}` |
+| `faq_full` | `{max}` |
+| `faq_ask_question`, `faq_ask_answer` | `{current}` |
+| `faq_admin_bad` | `{add}` `{delete}` |
+
+### 9.1 Branch FAQ
+
+FAQ entries live in the KV key `bot_faq` (not inside `bot_texts`):
+
+```json
+{
+  "items": [
+    {"id": "open-account", "question": "...", "answer": "..."}
+  ],
+  "hidden": ["hours"]
+}
+```
+
+`items` is display order. `hidden` lists default ids the admin deleted, so a later deploy does not put them back. A default id that is new in code and not hidden is appended.
+
+From the admin menu, without a redeploy:
+
+1. «ویرایش پرسش‌ها»
+2. Send the row number, then the question, then the answer
+3. `جدید` adds one (10 items maximum). The word is the text key `faq_cmd_add`
+4. `حذف ۲` deletes that row. The prefix is the text key `faq_cmd_delete`
+5. «بازگشت», «انصراف», `/cancel`, or `/start` leaves the flow
+
+If you rename `faq_cmd_add` or `faq_cmd_delete`, edit `faq_admin_prompt` so the hint uses the same words.
+
+Seeded ids: `open-account`, `settlement`, `fee`, `sheba-docs`, `hours`, `payroll-file`, `trace`, `limits`. The copy is branch-placeholder text (no fixed fee or hours) and can be replaced in the admin flow.
+
+Customers open «پرسش‌های متداول», tap a button or send a number, then use «بازگشت به پرسش‌ها» or «بازگشت». A bare number outside that screen does not open the first answer.
+
+### 9.2 Personalized /start
+
+Only `/start`, and only for non-admins. Leaving another flow shows the ordinary menu so «خوش برگشتی» is not repeated mid-task.
+
+- First stored visit with `first_name`: `welcome_first`
+- Later visit: «خوش برگشتی» plus the name
+- If `last_action` is `sample`, `sheba`, `faq`, or `excel`, that action’s label is mentioned
+- NULL or an unknown code: no topic is invented
+- No `first_name`: first visit uses `welcome`; a later visit uses `welcome_back_plain`
+- D1 missing or `get` failing: generic `welcome`, and the chat still works
+- If only the `last_action` column is missing, the name greeting still works and no topic is invented
+
+`welcome_hint` and `excel_upload_hint` are appended under both greetings.
 
 Bale formats outgoing text as Markdown (`*` bold, `_` italic, with spaces around the markers). Stored text is capped around 3500 characters.
 
@@ -528,8 +667,9 @@ A failed check leaves the bot waiting for another number. A valid check, «ان�
 | `/id` | Replies with the numeric user id |
 | `/users` | Admin only: recent users from D1 |
 | `/cancel` | Cancels Sheba entry or text editing |
-| Sample button | `sendDocument` of `sample.xlsx` to that chat |
+| Payroll sample button | `sendDocument` of `sample.xlsx` to that chat |
 | Sheba button | Asks for an IBAN |
+| FAQ button | Lists branch questions; a number or button shows the answer |
 | `.xlsx` document | Download via `getFile`, convert, `sendDocument` to `ADMIN_ID`, then acknowledge the sender |
 
 Bale’s `getFile` limit in the docs is 20 MB. Larger documents are rejected before download. The text file is not sent back to the uploader.

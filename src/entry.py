@@ -20,6 +20,7 @@ from workers import Response, WorkerEntrypoint
 
 from bale import BaleClient, BaleError, DryRunBale
 from bot import BotContext, handle_update
+from faq import FaqRepository
 from routing import setup_authorized, webhook_authorized
 from sample_loader import load_sample_xlsx
 from state import StateRepository, UpdateDedupe
@@ -128,6 +129,8 @@ async def _build_context(env: object) -> tuple[BotContext, object, bool] | tuple
         admin_id=_env_str(env, "ADMIN_ID"),
         load_sample=lambda: load_sample_xlsx(env),
         users=_user_store(env),
+        # پرسش‌ها همان namespace متن‌ها را استفاده می‌کنند تا مدیر بدون استقرار عوضشان کند.
+        faq=FaqRepository(kv),
     )
     return context, client, dry_run
 
