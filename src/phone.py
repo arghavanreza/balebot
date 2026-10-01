@@ -47,3 +47,21 @@ def normalize_phone(value: object) -> str | None:
     if _MOBILE.fullmatch(text) is None:
         return None
     return "+98" + text
+
+
+def looks_like_phone_attempt(value: object) -> bool:
+    """متن شبیه تلاش برای شماره است، حتی اگر کوتاه، ثابت، یا نامعتبر باشد.
+
+    دکمهٔ منو و «سلام» رقم موبایل ندارند و False می‌مانند تا یادآوری شماره
+    با پیام «این شماره را نشناختم» قاطی نشود. شبا با IR شروع می‌شود و این‌جا نیست.
+    """
+    if normalize_phone(value) is not None:
+        return True
+    if not isinstance(value, str):
+        return False
+    folded = _SEPARATORS.sub("", value.translate(_DIGIT_FOLD).strip())
+    digits = "".join(char for char in folded if char.isdigit())
+    if len(digits) < 4:
+        return False
+    # ۰۲۱ و ۰۹۱۲ هر دو با صفر شروع می‌شوند. ۹۸ پیش‌شمارهٔ ایران است و ۹ تنها موبایل بدون صفر.
+    return digits.startswith(("0", "98", "9"))

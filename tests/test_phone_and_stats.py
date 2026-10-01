@@ -4,7 +4,7 @@
 """
 
 from bot import handle_update, phone_keyboard
-from phone import normalize_phone
+from phone import looks_like_phone_attempt, normalize_phone
 from stats import format_stats, format_tehran_stamp, tehran_day_bounds
 from stats import StatsSnapshot
 from test_bot import ADMIN, USER, FakeBale, _ctx, _document, _run, _text, _xlsx_bytes
@@ -24,6 +24,11 @@ def test_normalize_phone_accepts_iran_mobile_shapes():
     assert normalize_phone("not-a-phone") is None
     assert normalize_phone(None) is None
     assert normalize_phone(True) is None
+    assert looks_like_phone_attempt("0912") is True
+    assert looks_like_phone_attempt("۰۲۱۱۲۳۴") is True
+    assert looks_like_phone_attempt("سلام") is False
+    assert looks_like_phone_attempt("IR430120000000000000000001") is False
+    assert looks_like_phone_attempt("1") is False
 
 
 def test_tehran_day_starts_at_20_30_utc():
@@ -71,8 +76,9 @@ def test_phone_keyboard_requests_bale_contact():
     assert button["request_contact"] is True
     assert button["text"] == DEFAULT_TEXTS["btn_share_phone"]
     labels = [row[0] if isinstance(row[0], str) else row[0]["text"] for row in markup["keyboard"]]
-    assert DEFAULT_TEXTS["btn_sample"] in labels
-    assert DEFAULT_TEXTS["btn_cancel"] in labels
+    assert labels == [DEFAULT_TEXTS["btn_share_phone"]]
+    assert DEFAULT_TEXTS["btn_sample"] not in labels
+    assert DEFAULT_TEXTS["btn_cancel"] not in labels
 
 
 def test_start_asks_for_phone_until_one_is_stored():
@@ -125,19 +131,66 @@ def test_contact_share_stores_own_number_and_rejects_someone_else():
     _run(scenario())
 
 
-def test_phone_prompt_can_be_skipped_and_menu_still_works():
+def test_phone_is_required_before_features_and_cancel_does_not_skip():
+    async def scenario():
+        client = FakeBale(files={"file-1": _xlsx_bytes()})
+        ctx = _ctx(client, sample=b"excel-bytes")
+        ctx.users = MemoryUserStore()
+
+        await handle_update(_text(USER, "/start", update_id=1), ctx)
+        labels = _flat_labels(client.messages[-1])
+        assert labels == [DEFAULT_TEXTS["btn_share_phone"]]
+        assert DEFAULT_TEXTS["btn_sample"] not in _flat_labels(client.messages[-2])
+
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_cancel"], update_id=2), ctx)
+        assert "موبایل" in client.messages[-1]["text"]
+        assert _flat_labels(client.messages[-1]) == [DEFAULT_TEXTS["btn_share_phone"]]
+        assert (await ctx.users.get(int(USER))).phone is None
+
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=3), ctx)
+        assert client.documents == []
+        assert (await ctx.users.get(int(USER))).last_action is None
+
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=4), ctx)
+        assert (await ctx.states.get(USER)).get("flow") == "phone"
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_faq"], update_id=5), ctx)
+        assert "مدارک" not in client.messages[-1]["text"]
+
+        await handle_update(_document(USER, update_id=6), ctx)
+        assert client.documents == []
+        assert "موبایل" in client.messages[-1]["text"]
+
+        await handle_update(_text(USER, "سلام", update_id=7), ctx)
+        assert "موبایل" in client.messages[-1]["text"]
+        assert "متوجه نشدم" not in client.messages[-1]["text"]
+
+        await handle_update(_text(USER, "09121234567", update_id=8), ctx)
+        assert "ثبت شد" in client.messages[-1]["text"]
+        opened = _flat_labels(client.messages[-1])
+        assert DEFAULT_TEXTS["btn_sample"] in opened
+        assert DEFAULT_TEXTS["btn_sheba"] in opened
+        assert DEFAULT_TEXTS["btn_faq"] in opened
+        assert (await ctx.users.get(int(USER))).phone == "+989121234567"
+
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=9), ctx)
+        assert client.documents[-1]["filename"] == "sample.xlsx"
+        assert (await ctx.users.get(int(USER))).last_action == "sample"
+
+    _run(scenario())
+
+
+def test_admin_uses_the_panel_without_a_stored_phone():
     async def scenario():
         client = FakeBale()
         ctx = _ctx(client, sample=b"excel-bytes")
         ctx.users = MemoryUserStore()
-        await handle_update(_text(USER, "/start", update_id=1), ctx)
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_cancel"], update_id=2), ctx)
-        assert "start" in client.messages[-1]["text"]
-        assert DEFAULT_TEXTS["btn_sample"] in _flat_labels(client.messages[-1])
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=3), ctx)
+        await handle_update(_text(ADMIN, "/start", update_id=1), ctx)
+        assert "پنل مدیر" in client.messages[-1]["text"]
+        assert DEFAULT_TEXTS["btn_edit"] in _flat_labels(client.messages[-1])
+        assert DEFAULT_TEXTS["btn_share_phone"] not in _flat_labels(client.messages[-1])
+        assert (await ctx.users.get(int(ADMIN))).phone is None
+        await handle_update(_text(ADMIN, DEFAULT_TEXTS["btn_sample"], update_id=2), ctx)
         assert client.documents[-1]["filename"] == "sample.xlsx"
-        assert (await ctx.users.get(int(USER))).phone is None
-        assert (await ctx.users.get(int(USER))).last_action == "sample"
 
     _run(scenario())
 
@@ -196,16 +249,18 @@ def test_stats_is_admin_only_and_counts_today():
         ctx.users = store
         ctx.clock = lambda: "2026-10-01T10:00:00Z"
 
-        await handle_update(_text(USER, "/stats", update_id=1), ctx)
+        await handle_update(_text(USER, "/start", update_id=1), ctx)
+        await handle_update(_text(USER, "09120000000", update_id=2), ctx)
+        await handle_update(_text(USER, "/stats", update_id=3), ctx)
         assert "فقط برای مدیر" in client.messages[-1]["text"]
 
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=2), ctx)
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=3), ctx)
-        await handle_update(_text(USER, DEFAULT_TEXTS["btn_faq"], update_id=4), ctx)
-        await handle_update(_text(USER, "1", update_id=5), ctx)
-        await handle_update(_document(USER, update_id=6), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sheba"], update_id=4), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_sample"], update_id=5), ctx)
+        await handle_update(_text(USER, DEFAULT_TEXTS["btn_faq"], update_id=6), ctx)
+        await handle_update(_text(USER, "1", update_id=7), ctx)
+        await handle_update(_document(USER, update_id=8), ctx)
 
-        await handle_update(_text(ADMIN, "/stats", update_id=7), ctx)
+        await handle_update(_text(ADMIN, "/stats", update_id=9), ctx)
         report = client.messages[-1]["text"]
         assert "آمار امروز" in report
         assert "2026-10-01" in report
@@ -219,7 +274,7 @@ def test_stats_is_admin_only_and_counts_today():
         assert "مدارک افتتاح حساب چیست؟" in report
 
         ctx.users = None
-        await handle_update(_text(ADMIN, "/stats", update_id=8), ctx)
+        await handle_update(_text(ADMIN, "/stats", update_id=10), ctx)
         assert "پایگاه آمار وصل نیست" in client.messages[-1]["text"]
 
     _run(scenario())
